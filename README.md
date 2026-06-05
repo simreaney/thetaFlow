@@ -40,11 +40,24 @@ $$
 q = -K(h)\left(\frac{\partial h}{\partial z} + 1\right)
 $$
 
-where:
+Variable definitions for this equation pair:
 
-- $z$ is positive downward (m)
-- $q$ is vertical flux (m/s), positive downward in this sign convention
-- $K(h)$ is unsaturated hydraulic conductivity (m/s)
+- $\theta$: volumetric water content ($\mathrm{m^3\,m^{-3}}$)
+- $t$: time (s)
+- $z$: vertical coordinate, positive downward (m)
+- $q$: vertical Darcian water flux (m/s), positive downward
+- $h$: pressure head (m)
+- $K(h)$: unsaturated hydraulic conductivity as a function of head (m/s)
+- $\partial/\partial t$: partial derivative with respect to time
+- $\partial/\partial z$: partial derivative with respect to depth
+
+Line graph: continuity equation response ($\partial\theta/\partial t$ vs $-\partial q/\partial z$)
+
+![Continuity equation response](outputs/equation_graphs/continuity_response.png)
+
+Line graph: Darcy flux response ($q$ vs hydraulic gradient for several $K$ values)
+
+![Darcy flux response](outputs/equation_graphs/darcy_flux_response.png)
 
 ### 2) van Genuchten water retention curve
 
@@ -63,8 +76,24 @@ $$
 Then:
 
 $$
-	heta(h) = \theta_r + S_e(h)(\theta_s - \theta_r)
+\theta(h) = \theta_r + S_e(h)(\theta_s - \theta_r)
 $$
+
+Variable definitions for van Genuchten retention:
+
+- $S_e$: effective saturation (dimensionless)
+- $\theta$: volumetric water content ($\mathrm{m^3\,m^{-3}}$)
+- $\theta_r$: residual volumetric water content ($\mathrm{m^3\,m^{-3}}$)
+- $\theta_s$: saturated volumetric water content ($\mathrm{m^3\,m^{-3}}$)
+- $h$: pressure head (m)
+- $\alpha$: inverse air-entry parameter ($\mathrm{m^{-1}}$)
+- $n$: shape parameter (dimensionless)
+- $m$: van Genuchten parameter, $m=1-1/n$ (dimensionless)
+- $|h|$: absolute value of pressure head
+
+Line graph: requested view with $S_e$ on y-axis and $\theta$ on x-axis
+
+![van Genuchten Se versus theta](outputs/equation_graphs/van_genuchten_se_vs_theta.png)
 
 For saturated/ponded conditions (`h >= 0`), the implementation caps to $S_e = 1$ and
 $\theta = \theta_s$ (subject to numerical clipping near exact bounds).
@@ -75,17 +104,24 @@ $$
 K(S_e) = K_s S_e^l\left[1 - \left(1 - S_e^{1/m}\right)^m\right]^2
 $$
 
-where:
+Variable definitions for conductivity equation:
 
-- $K_s$ is saturated conductivity (m/s)
-- $l$ is the pore-connectivity parameter (`pore_connectivity`, often 0.5)
+- $K(S_e)$: unsaturated hydraulic conductivity (m/s)
+- $K_s$: saturated hydraulic conductivity (m/s)
+- $S_e$: effective saturation (dimensionless)
+- $l$: Mualem pore-connectivity parameter (dimensionless)
+- $m$: van Genuchten parameter, $m=1-1/n$ (dimensionless)
+
+Line graph: conductivity response ($K$ on y-axis, $S_e$ on x-axis)
+
+![Mualem van Genuchten conductivity versus Se](outputs/equation_graphs/mualem_conductivity_vs_se.png)
 
 ## Numerical Implementation
 
 The script uses an explicit finite-volume style update over layer thickness `dz`:
 
 $$
-	heta_i^{t+\Delta t} = \theta_i^t + \frac{\Delta t}{\Delta z}\left(q_{i+1/2} - q_{i-1/2}\right)
+\theta_i^{t+\Delta t} = \theta_i^t + \frac{\Delta t}{\Delta z}\left(q_{i-1/2} - q_{i+1/2}\right)
 $$
 
 Interface fluxes are computed from averaged conductivity and local head gradient.
@@ -109,11 +145,15 @@ $$
 q_{top} = I - ET_a
 $$
 
-where:
+Variable definitions for surface flux equation:
 
-- $P$ is rainfall flux from `rainfall_mm_h`
-- $I$ is actual infiltration flux into soil
-- $ET_a$ is actual evaporation demand limited by available water in the top layer
+- $q_{top}$: net downward surface flux into the soil (m/s)
+- $I$: actual infiltration flux into soil (m/s)
+- $ET_a$: actual evapotranspiration flux at the surface (m/s)
+
+Line graph: surface net flux response ($q_{top}$ on y-axis, $I$ on x-axis)
+
+![Surface net flux qtop versus infiltration](outputs/equation_graphs/surface_flux_qtop_vs_I.png)
 
 Overland flow is generated when rainfall exceeds infiltration capacity:
 
@@ -121,7 +161,17 @@ $$
 I = \min(P, I_{cap}), \quad R = P - I
 $$
 
-where $R$ is overland flow (Hortonian excess runoff).
+Variable definitions for rainfall partitioning equation:
+
+- $P$: rainfall flux from `rainfall_mm_h`
+- $I_{cap}$: infiltration capacity flux
+- $I$: actual infiltration flux
+- $R$: overland flow (Hortonian excess runoff)
+- $\min(P, I_{cap})$: infiltration is capped by infiltration capacity
+
+Line graph: rainfall partitioning ($I$ and $R$ on y-axis, $P$ on x-axis)
+
+![Rainfall partitioning infiltration and runoff versus rainfall](outputs/equation_graphs/partitioning_infiltration_runoff_vs_P.png)
 
 In ThetaFlow, infiltration capacity is computed with the Green-Ampt form:
 
@@ -129,11 +179,17 @@ $$
 I_{cap} = K_s\left(1 + \frac{\psi_f\,\Delta\theta}{F}\right)
 $$
 
-with:
+Variable definitions for Green-Ampt capacity equation:
 
-- $\psi_f$: wetting-front suction head (`green_ampt_wetting_front_suction_m`)
-- $\Delta\theta = \theta_s - \theta_{surface}$ (surface moisture deficit)
-- $F$: cumulative infiltration depth since simulation start
+- $I_{cap}$: infiltration capacity (m/s)
+- $K_s$: saturated hydraulic conductivity (m/s)
+- $\psi_f$: wetting-front suction head (`green_ampt_wetting_front_suction_m`, m)
+- $\Delta\theta = \theta_s - \theta_{surface}$: surface moisture deficit (dimensionless)
+- $F$: cumulative infiltration depth since simulation start (m)
+
+Line graph: Green-Ampt capacity ($I_{cap}$ on y-axis, $F$ on x-axis)
+
+![Green Ampt infiltration capacity versus cumulative infiltration](outputs/equation_graphs/green_ampt_icap_vs_F.png)
 
 Potential ET input (`pet_mm_h`) is converted to flux and constrained so the top layer
 does not drop below approximately `theta_r + min_theta_buffer` during a sub-step.
@@ -145,6 +201,16 @@ The bottom boundary is free drainage:
 $$
 q_{bottom} = K(h_{bottom})
 $$
+
+Variable definitions for lower boundary equation:
+
+- $q_{bottom}$: bottom-boundary drainage flux (m/s)
+- $K(h_{bottom})$: unsaturated hydraulic conductivity evaluated at bottom-node head (m/s)
+- $h_{bottom}$: pressure head at the bottom node (m)
+
+Line graph: lower boundary response ($q_{bottom}$ on y-axis, $h_{bottom}$ on x-axis)
+
+![Lower boundary qbottom versus hbottom](outputs/equation_graphs/lower_boundary_qbottom_vs_hbottom.png)
 
 (downward drainage under unit hydraulic gradient).
 
@@ -197,7 +263,7 @@ S_e = [1 + (\alpha|h|)^n]^{-m} = [1 + 3.6^{1.56}]^{-0.359} \approx 0.66
 $$
 
 $$
-	heta = \theta_r + S_e(\theta_s-\theta_r)
+\theta = \theta_r + S_e(\theta_s-\theta_r)
 = 0.065 + 0.66\times(0.41-0.065)
 \approx 0.29
 $$
@@ -357,6 +423,30 @@ Generated in `outputs/`:
 - color: volumetric moisture
 
 This quickly shows infiltration fronts, redistribution, and drying periods.
+
+## Key Variable Relationship Graph
+
+The diagram below summarizes how forcing and soil parameters control fluxes, state
+updates, and reported outputs.
+
+```mermaid
+flowchart LR
+	A[Rainfall P and PET] --> B[Surface boundary
+q_top = I - ET_a]
+	C[Hydraulic properties
+theta_r, theta_s, alpha, n, l, K_s] --> D[Retention and conductivity
+S_e(h), theta(h), K(h)]
+	B --> E[Richards update
+partial theta/partial t = -partial q/partial z]
+	D --> E
+	E --> F[Updated states
+theta(z,t), h(z,t)]
+	F --> G[Bottom drainage q_bottom]
+	F --> H[Water balance diagnostics
+infiltration, runoff, AET]
+	F --> I[Result
+moisture heatmap and profile outputs]
+```
 
 ## Assumptions and Limitations
 
