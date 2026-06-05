@@ -1,0 +1,23 @@
+{
+  "soil": {
+    "theta_r": 0.065,
+    "theta_s": 0.41,
+    "alpha_per_m": 3.6,
+    "n": 1.56,
+    "ks_m_per_s": 1.5e-5,
+    "pore_connectivity": 0.5
+  },
+  "column": {
+    "nz": 100,
+    "dz_m": 0.01
+  },
+  "simulation": {
+    "initial_head_m": -1.0,
+    "default_dt_hours": 1.0,
+    "max_substep_seconds": 60.0,
+    "min_theta_buffer": 0.002,
+    "max_dtheta_per_substep": 0.002,
+    "min_substep_seconds": 1.0,
+    "green_ampt_wetting_front_suction_m": 0.11
+  }
+}
