@@ -44,6 +44,8 @@ class SimulationConfig:
     max_dtheta_per_substep: float = 0.002
     min_substep_seconds: float = 1.0
     green_ampt_wetting_front_suction_m: float = 0.11
+    slope_angle_deg: float = 6.0
+    hillslope_flow_path_m: float = 1.0
 
 
 @dataclass
@@ -184,9 +186,18 @@ def one_substep(
 
     q_upward[n] = -conductivity[-1]
 
-    theta_new = theta + dt_s * (q_upward[1:] - q_upward[:-1]) / dz_m
+    vertical_dtheta_rate = (q_upward[1:] - q_upward[:-1]) / dz_m
+
+    # Represent lateral throughflow for a hillslope block as gravity-driven flow along slope.
+    slope_angle_rad = np.deg2rad(sim.slope_angle_deg)
+    lateral_flux_layers = conductivity * np.sin(slope_angle_rad)
+    lateral_sink_rate = lateral_flux_layers / max(sim.hillslope_flow_path_m, 1.0e-9)
+
+    theta_new = theta + dt_s * (vertical_dtheta_rate - lateral_sink_rate)
     theta_new = np.clip(theta_new, soil.theta_r + 1.0e-8, soil.theta_s - 1.0e-8)
     head_new = head_from_theta(theta_new, soil)
+
+    lateral_throughflow_flux = float(np.sum(lateral_flux_layers) * dz_m / max(sim.hillslope_flow_path_m, 1.0e-9))
 
     diagnostics = {
         "rain_flux_m_per_s": rain_flux,
@@ -198,6 +209,7 @@ def one_substep(
         "cumulative_infiltration_m": cumulative_infiltration_m_new,
         "surface_net_downward_flux_m_per_s": net_downward_flux,
         "bottom_downward_flux_m_per_s": -q_upward[n],
+        "lateral_throughflow_flux_m_per_s": lateral_throughflow_flux,
     }
 
     return SimulationState(head_m=head_new, theta=theta_new), diagnostics, cumulative_infiltration_m_new
@@ -246,7 +258,12 @@ def estimate_stable_dt_seconds(
         q_upward[j] = -k_int * (dh_dz + 1.0)
 
     q_upward[n] = -conductivity[-1]
-    dtheta_rate = (q_upward[1:] - q_upward[:-1]) / dz_m
+
+    vertical_dtheta_rate = (q_upward[1:] - q_upward[:-1]) / dz_m
+    slope_angle_rad = np.deg2rad(sim.slope_angle_deg)
+    lateral_flux_layers = conductivity * np.sin(slope_angle_rad)
+    lateral_sink_rate = lateral_flux_layers / max(sim.hillslope_flow_path_m, 1.0e-9)
+    dtheta_rate = vertical_dtheta_rate - lateral_sink_rate
     max_abs_rate = float(np.max(np.abs(dtheta_rate)))
 
     if max_abs_rate <= 1.0e-15:
@@ -362,6 +379,7 @@ def run_simulation(
                 "step": i,
                 "time_hours": elapsed_s / 3600.0,
                 "timestamp": timestamp,
+                "slope_angle_deg": sim.slope_angle_deg,
                 "rainfall_mm_h": rain,
                 "pet_mm_h": pet,
                 "aet_mm_h": step_diag["aet_flux_m_per_s"] * 1000.0 * 3600.0,
@@ -372,6 +390,7 @@ def run_simulation(
                 * 1000.0
                 * 3600.0,
                 "bottom_drainage_mm_h": step_diag["bottom_downward_flux_m_per_s"] * 1000.0 * 3600.0,
+                "lateral_throughflow_mm_h": step_diag["lateral_throughflow_flux_m_per_s"] * 1000.0 * 3600.0,
             }
         )
 
@@ -399,13 +418,13 @@ def plot_moisture_heatmap(
     pivot = profile_df.pivot(index="depth_m", columns="time_hours", values="theta").sort_index(ascending=True)
     mean_theta = profile_df.groupby("time_hours", as_index=False)["theta"].mean()
 
-    fig, (ax_rain, ax_runoff, ax_mean, ax_moisture) = plt.subplots(
-        nrows=4,
+    fig, (ax_rain, ax_runoff, ax_lateral, ax_mean, ax_moisture) = plt.subplots(
+        nrows=5,
         ncols=1,
-        figsize=(12, 5),
+        figsize=(12, 6),
         sharex=True,
         constrained_layout=True,
-        gridspec_kw={"height_ratios": [1, 1, 1, 4], "hspace": 0.08},
+        gridspec_kw={"height_ratios": [1, 1, 1, 1, 4], "hspace": 0.08},
     )
 
     rain_x = diagnostics_df["time_hours"].to_numpy(dtype=float)
@@ -413,7 +432,7 @@ def plot_moisture_heatmap(
     ax_rain.step(rain_x, rain_y, where="post", color="#1f77b4", linewidth=1.8)
     ax_rain.fill_between(rain_x, rain_y, step="post", alpha=0.25, color="#1f77b4")
     ax_rain.set_ylabel("Rain\n(mm/h)")
-    ax_rain.set_title("Rainfall, Runoff, and Soil Moisture Evolution")
+    ax_rain.set_title("Rainfall, Runoff, Lateral Throughflow, and Soil Moisture Evolution")
     ax_rain.grid(True, axis="y", alpha=0.25)
 
     runoff_y = diagnostics_df["runoff_mm_h"].to_numpy(dtype=float)
@@ -421,6 +440,12 @@ def plot_moisture_heatmap(
     ax_runoff.fill_between(rain_x, runoff_y, step="post", alpha=0.2, color="#d62728")
     ax_runoff.set_ylabel("Runoff\n(mm/h)")
     ax_runoff.grid(True, axis="y", alpha=0.25)
+
+    lateral_y = diagnostics_df["lateral_throughflow_mm_h"].to_numpy(dtype=float)
+    ax_lateral.plot(rain_x, lateral_y, color="#9467bd", linewidth=1.8)
+    ax_lateral.fill_between(rain_x, lateral_y, alpha=0.2, color="#9467bd")
+    ax_lateral.set_ylabel("Lateral\n(mm/h)")
+    ax_lateral.grid(True, axis="y", alpha=0.25)
 
     mean_x = mean_theta["time_hours"].to_numpy(dtype=float)
     mean_y = mean_theta["theta"].to_numpy(dtype=float)

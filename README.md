@@ -6,6 +6,7 @@ ThetaFlow simulates 1D vertical water movement in a soil column using:
 - A LandLab `RasterModelGrid` to hold column state and fields
 - The mixed-form Richards equation (Darcy flux + mass conservation)
 - Van Genuchten-Mualem hydraulic functions
+- A hillslope-angle lateral throughflow term for soil blocks on slopes
 - Time-series forcing from rainfall and PET
 
 The model is designed as a transparent, configurable research/teaching workflow for
@@ -18,6 +19,7 @@ The code solves 1D vertical unsaturated flow by combining:
 - Darcy's law for interface water fluxes
 - Water mass conservation in each control volume
 - Nonlinear constitutive relationships for `theta(h)` and `K(h)`
+- Lateral gravity-driven throughflow based on slope angle
 
 State variables at each soil layer are:
 
@@ -50,10 +52,6 @@ Variable definitions for this equation pair:
 - $K(h)$: unsaturated hydraulic conductivity as a function of head (m/s)
 - $\partial/\partial t$: partial derivative with respect to time
 - $\partial/\partial z$: partial derivative with respect to depth
-
-Line graph: continuity equation response ($\partial\theta/\partial t$ vs $-\partial q/\partial z$)
-
-![Continuity equation response](outputs/equation_graphs/continuity_response.png)
 
 Line graph: Darcy flux response ($q$ vs hydraulic gradient for several $K$ values)
 
@@ -116,12 +114,48 @@ Line graph: conductivity response ($K$ on y-axis, $S_e$ on x-axis)
 
 ![Mualem van Genuchten conductivity versus Se](outputs/equation_graphs/mualem_conductivity_vs_se.png)
 
-## Numerical Implementation
+### 4) Hillslope lateral throughflow (new)
 
-The script uses an explicit finite-volume style update over layer thickness `dz`:
+For a soil block on slope angle $\beta$, the model computes layer-wise lateral
+throughflow as:
 
 $$
-\theta_i^{t+\Delta t} = \theta_i^t + \frac{\Delta t}{\Delta z}\left(q_{i-1/2} - q_{i+1/2}\right)
+q_{lat,i} = K_i\sin(\beta)
+$$
+
+and applies it as a storage sink:
+
+$$
+\left(\frac{\partial\theta_i}{\partial t}\right)_{lat} = -\frac{q_{lat,i}}{L}
+$$
+
+where:
+
+- $q_{lat,i}$: lateral throughflow flux in layer $i$ (m/s)
+- $K_i$: unsaturated hydraulic conductivity at layer $i$ (m/s)
+- $\beta$: slope angle (`simulation.slope_angle_deg`, degrees)
+- $L$: hillslope flow path length (`simulation.hillslope_flow_path_m`, m)
+- $\theta_i$: volumetric water content in layer $i$ ($\mathrm{m^3\,m^{-3}}$)
+
+The equivalent profile-integrated lateral throughflow reported in diagnostics is:
+
+$$
+q_{lat,eq} = \sum_i \frac{q_{lat,i}\,\Delta z}{L}
+$$
+
+Line graph: impact of slope angle on lateral throughflow
+
+![Impact of slope on lateral throughflow](outputs/equation_graphs/slope_impact_on_lateral_flow.png)
+
+## Numerical Implementation
+
+The script uses an explicit finite-volume style update over layer thickness `dz`.
+With hillslope lateral throughflow, the layer update is:
+
+$$
+\theta_i^{t+\Delta t} = \theta_i^t + \Delta t\left[
+\frac{q_{i-1/2} - q_{i+1/2}}{\Delta z} - \frac{q_{lat,i}}{L}
+\right]
 $$
 
 Interface fluxes are computed from averaged conductivity and local head gradient.
@@ -329,6 +363,8 @@ Key fields:
 - `simulation.max_dtheta_per_substep`: adaptive cap on moisture increment per sub-step
 - `simulation.min_theta_buffer`: moisture buffer above residual for evaporation limiting
 - `simulation.green_ampt_wetting_front_suction_m`: Green-Ampt wetting-front suction head
+- `simulation.slope_angle_deg`: hillslope angle for lateral throughflow (degrees, default 6)
+- `simulation.hillslope_flow_path_m`: representative lateral flow path length (m)
 
 Recommended checks when supplying parameters:
 
@@ -390,7 +426,7 @@ Custom paths are fully supported via these command-line arguments.
 Generated in `outputs/`:
 
 - `soil_moisture_profiles.csv`: depth-wise moisture/head/conductivity at each forcing step
-- `water_balance_diagnostics.csv`: rainfall, PET, estimated AET, net surface flux, bottom drainage
+- `water_balance_diagnostics.csv`: rainfall, PET, estimated AET, infiltration/runoff, bottom drainage, and lateral throughflow
 - `moisture_heatmap.png`: time-depth moisture visualization
 
 ### `soil_moisture_profiles.csv` columns
@@ -405,6 +441,7 @@ Generated in `outputs/`:
 
 ### `water_balance_diagnostics.csv` columns
 
+- `slope_angle_deg`
 - `rainfall_mm_h`
 - `pet_mm_h`
 - `aet_mm_h` (actual ET achieved under moisture limitation)
@@ -413,6 +450,7 @@ Generated in `outputs/`:
 - `cumulative_infiltration_mm` (Green-Ampt cumulative infiltration depth)
 - `surface_net_downward_flux_mm_h`
 - `bottom_drainage_mm_h`
+- `lateral_throughflow_mm_h` (profile-integrated lateral throughflow equivalent flux)
 
 ## Visualization
 
@@ -421,6 +459,13 @@ Generated in `outputs/`:
 - x-axis: simulation time (h)
 - y-axis: depth (m, increasing downward)
 - color: volumetric moisture
+
+The figure now also includes time series panels for:
+
+- rainfall
+- runoff
+- lateral throughflow (`lateral_throughflow_mm_h`)
+- mean column moisture
 
 This quickly shows infiltration fronts, redistribution, and drying periods.
 
@@ -436,21 +481,26 @@ q_top = I - ET_a]
 	C[Hydraulic properties
 theta_r, theta_s, alpha, n, l, K_s] --> D[Retention and conductivity
 S_e(h), theta(h), K(h)]
+	J[Slope settings
+beta, L] --> K[Lateral throughflow
+q_lat = K sin(beta)]
 	B --> E[Richards update
 partial theta/partial t = -partial q/partial z]
 	D --> E
+	D --> K
+	K --> E
 	E --> F[Updated states
 theta(z,t), h(z,t)]
 	F --> G[Bottom drainage q_bottom]
 	F --> H[Water balance diagnostics
-infiltration, runoff, AET]
+infiltration, runoff, AET, lateral]
 	F --> I[Result
 moisture heatmap and profile outputs]
 ```
 
 ## Assumptions and Limitations
 
-- 1D vertical flow only (no lateral flow)
+- Vertical Richards flow with an added lateral throughflow sink term for hillslopes
 - Homogeneous soil hydraulic properties with depth
 - Explicit time integration (can require small sub-steps for high conductivity / sharp fronts)
 - PET is treated as near-surface evaporative demand (no explicit root profile yet)
