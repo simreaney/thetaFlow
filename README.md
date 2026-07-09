@@ -1,9 +1,9 @@
-# ThetaFlow: A LandLab-based Richards equation simulator for vadose-zone dynamics.
+# ThetaFlow: A Richards equation simulator for vadose-zone dynamics.
 
 
 ThetaFlow simulates 1D vertical water movement in a soil column using:
 
-- A LandLab `RasterModelGrid` to hold column state and fields
+- Plain NumPy arrays to hold column state and fields
 - The mixed-form Richards equation (Darcy flux + mass conservation)
 - Van Genuchten-Mualem hydraulic functions
 - A hillslope-angle lateral throughflow term for soil blocks on slopes

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Richards-equation soil column simulation using LandLab for grid structure."""
+"""Richards-equation soil column simulation for a 1D vertical soil column."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from landlab import RasterModelGrid
 
 
 @dataclass
@@ -125,19 +124,10 @@ def read_forcing(forcing_csv: Path, default_dt_hours: float) -> pd.DataFrame:
     return forcing
 
 
-def build_grid(nz: int, dz_m: float) -> tuple[RasterModelGrid, np.ndarray, np.ndarray]:
-    nrows = max(nz, 2)
-    grid = RasterModelGrid((nrows, 2), xy_spacing=(dz_m, 1.0))
+def build_column_geometry(nz: int, dz_m: float) -> tuple[np.ndarray, np.ndarray]:
     column_nodes = np.arange(nz) * 2
     depth_m = np.arange(nz, dtype=float) * dz_m
-
-    grid.add_zeros("soil_water__pressure_head", at="node")
-    grid.add_zeros("soil_water__volumetric_moisture", at="node")
-    grid.add_zeros("soil_water__hydraulic_conductivity", at="node")
-    full_depth = np.full(grid.number_of_nodes, np.nan)
-    full_depth[column_nodes] = depth_m
-    grid.add_field("depth_m", full_depth, at="node", copy=False)
-    return grid, column_nodes, depth_m
+    return column_nodes, depth_m
 
 
 def one_substep(
@@ -282,7 +272,7 @@ def run_simulation(
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    grid, column_nodes, depth_m = build_grid(column.nz, column.dz_m)
+    column_nodes, depth_m = build_column_geometry(column.nz, column.dz_m)
 
     initial_head = np.full(column.nz, sim.initial_head_m, dtype=float)
     initial_theta = theta_from_head(initial_head, soil)
@@ -350,14 +340,7 @@ def run_simulation(
         if step_diag is None:
             continue
 
-        grid.at_node["soil_water__pressure_head"][:] = np.nan
-        grid.at_node["soil_water__volumetric_moisture"][:] = np.nan
-        grid.at_node["soil_water__hydraulic_conductivity"][:] = np.nan
-        grid.at_node["soil_water__pressure_head"][column_nodes] = state.head_m
-        grid.at_node["soil_water__volumetric_moisture"][column_nodes] = state.theta
-        grid.at_node["soil_water__hydraulic_conductivity"][column_nodes] = hydraulic_conductivity(
-            state.head_m, soil
-        )
+        conductivity = hydraulic_conductivity(state.head_m, soil)
 
         timestamp = row["timestamp"] if "timestamp" in forcing.columns else pd.NaT
 
@@ -370,7 +353,7 @@ def run_simulation(
                     "depth_m": depth_m[node],
                     "theta": state.theta[node],
                     "head_m": state.head_m[node],
-                    "conductivity_m_per_s": grid.at_node["soil_water__hydraulic_conductivity"][column_nodes[node]],
+                    "conductivity_m_per_s": conductivity[node],
                 }
             )
 
