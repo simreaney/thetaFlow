@@ -631,43 +631,40 @@ def plot_moisture_heatmap(
     plt.close(fig)
 
 
-def fetch_openweather_forcing(
-    api_key: str,
+def fetch_openmeteo_forcing(
     lat: float,
     lon: float,
     historical_days: int = 1,
 ) -> pd.DataFrame:
-    """Fetch hourly observed + forecast forcing from the OpenWeatherMap One Call API 3.0.
+    """Fetch hourly observed + forecast forcing from the Open-Meteo API (no API key required).
 
     Returns a DataFrame with columns ``timestamp``, ``rainfall_mm_h``, and
     ``pet_mm_h`` compatible with :func:`read_forcing`.
 
     The function combines:
-    * Up to ``historical_days`` days of past observed data via ``/timemachine``
-      (one API call per day; max 100 days).
-    * Up to 8 days of hourly forecast from the standard One Call endpoint.
+    * Up to ``historical_days`` days of past observed data via the Open-Meteo
+      Historical Weather API (``/v1/archive``).
+    * Up to 16 days of hourly forecast from the Open-Meteo Forecast API
+      (``/v1/forecast``).
 
     PET is estimated from the Hargreaves–Samani equation using temperature and
-    the latitude-based extra-terrestrial radiation for the day of year, since
-    the free tier of OpenWeatherMap does not provide radiation directly.
+    the latitude-based extra-terrestrial radiation for the day of year.
 
     Parameters
     ----------
-    api_key:
-        OpenWeatherMap API key (v3.0 subscription required).
     lat:
         Site latitude in decimal degrees.
     lon:
         Site longitude in decimal degrees.
     historical_days:
-        Number of past days to fetch via the ``/timemachine`` endpoint (1–100).
-        Each day requires one additional API call.  Defaults to 1 (yesterday only).
+        Number of past days to fetch from the historical archive (1–100).
+        Defaults to 1 (yesterday only).
     """
     try:
         import requests
     except ImportError as exc:
         raise ImportError(
-            "The 'requests' package is required for OpenWeather integration. "
+            "The 'requests' package is required for Open-Meteo integration. "
             "Install it with: pip install requests"
         ) from exc
 
@@ -676,69 +673,74 @@ def fetch_openweather_forcing(
 
     historical_days = max(1, min(int(historical_days), 100))
 
-    BASE_URL = "https://api.openweathermap.org/data/3.0/onecall"
-
-    # ------------------------------------------------------------------
-    # 1.  Forecast data (hourly, up to 48 h) + daily (up to 8 days)
-    # ------------------------------------------------------------------
-    params_forecast = {
-        "lat": lat,
-        "lon": lon,
-        "appid": api_key,
-        "units": "metric",
-        "exclude": "current,minutely,alerts",
-    }
-    resp = requests.get(BASE_URL, params=params_forecast, timeout=30)
-    resp.raise_for_status()
-    ow = resp.json()
+    FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+    ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
     rows: list[dict] = []
 
-    hourly = ow.get("hourly", [])
-    for h in hourly:
-        ts = pd.Timestamp(h["dt"], unit="s", tz="UTC")
-        rain_mm = h.get("rain", {}).get("1h", 0.0)
-        rows.append({"timestamp": ts, "rainfall_mm_h": rain_mm, "_temp_c": h["temp"]})
+    # ------------------------------------------------------------------
+    # 1.  Forecast data (hourly, up to 16 days ahead)
+    # ------------------------------------------------------------------
+    params_forecast = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,precipitation",
+        "timezone": "UTC",
+    }
+    resp = requests.get(FORECAST_URL, params=params_forecast, timeout=30)
+    resp.raise_for_status()
+    fc = resp.json()
 
-    # Fill any remaining days from daily data (beyond hourly window)
-    daily = ow.get("daily", [])
-    hourly_timestamps = {r["timestamp"] for r in rows}
-    for d in daily:
-        day_start = pd.Timestamp(d["dt"], unit="s", tz="UTC").normalize()
-        rain_mm_day = d.get("rain", 0.0)
-        rain_mm_h = rain_mm_day / 24.0
-        temp_mean = (d["temp"]["max"] + d["temp"]["min"]) / 2.0
-        for hour_offset in range(24):
-            ts = day_start + pd.Timedelta(hours=hour_offset)
-            if ts not in hourly_timestamps:
-                rows.append({"timestamp": ts, "rainfall_mm_h": rain_mm_h, "_temp_c": temp_mean})
+    hourly_fc = fc.get("hourly", {})
+    times_fc = hourly_fc.get("time", [])
+    temps_fc = hourly_fc.get("temperature_2m", [])
+    precip_fc = hourly_fc.get("precipitation", [])
+
+    for t, temp, precip in zip(times_fc, temps_fc, precip_fc):
+        ts = pd.Timestamp(t, tz="UTC")
+        rows.append({
+            "timestamp": ts,
+            "rainfall_mm_h": float(precip) if precip is not None else 0.0,
+            "_temp_c": float(temp) if temp is not None else 0.0,
+        })
 
     # ------------------------------------------------------------------
-    # 2.  Historical observed data via timemachine (up to 100 days back)
+    # 2.  Historical observed data via the archive endpoint
     # ------------------------------------------------------------------
     now_utc = datetime.now(timezone.utc)
-    for day_offset in range(1, historical_days + 1):
-        target_dt = int((now_utc - timedelta(days=day_offset)).timestamp())
+    end_date = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
+    start_date = (now_utc - timedelta(days=historical_days)).strftime("%Y-%m-%d")
+
+    try:
         params_hist = {
-            "lat": lat,
-            "lon": lon,
-            "dt": target_dt,
-            "appid": api_key,
-            "units": "metric",
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": start_date,
+            "end_date": end_date,
+            "hourly": "temperature_2m,precipitation",
+            "timezone": "UTC",
         }
-        try:
-            resp_hist = requests.get(f"{BASE_URL}/timemachine", params=params_hist, timeout=30)
-            resp_hist.raise_for_status()
-            hist_data = resp_hist.json()
-            for h in hist_data.get("data", []):
-                ts = pd.Timestamp(h["dt"], unit="s", tz="UTC")
-                rain_mm = h.get("rain", {}).get("1h", 0.0)
-                rows.append({"timestamp": ts, "rainfall_mm_h": rain_mm, "_temp_c": h["temp"]})
-        except Exception as exc:  # noqa: BLE001
-            print(f"Warning: could not fetch historical weather data for day -{day_offset}: {exc}")
+        resp_hist = requests.get(ARCHIVE_URL, params=params_hist, timeout=30)
+        resp_hist.raise_for_status()
+        hist = resp_hist.json()
+
+        hourly_hist = hist.get("hourly", {})
+        times_hist = hourly_hist.get("time", [])
+        temps_hist = hourly_hist.get("temperature_2m", [])
+        precip_hist = hourly_hist.get("precipitation", [])
+
+        for t, temp, precip in zip(times_hist, temps_hist, precip_hist):
+            ts = pd.Timestamp(t, tz="UTC")
+            rows.append({
+                "timestamp": ts,
+                "rainfall_mm_h": float(precip) if precip is not None else 0.0,
+                "_temp_c": float(temp) if temp is not None else 0.0,
+            })
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: could not fetch historical weather data from Open-Meteo archive: {exc}")
 
     if not rows:
-        raise ValueError("OpenWeatherMap returned no usable data.")
+        raise ValueError("Open-Meteo returned no usable data.")
 
     df = pd.DataFrame(rows)
     df = df.sort_values("timestamp").drop_duplicates(subset="timestamp").reset_index(drop=True)
@@ -778,7 +780,7 @@ def fetch_openweather_forcing(
     df = df.drop(columns=["_temp_c"])
 
     print(
-        f"Fetched {len(df)} hourly records from OpenWeatherMap "
+        f"Fetched {len(df)} hourly records from Open-Meteo "
         f"({df['timestamp'].min()} – {df['timestamp'].max()})"
     )
     return df
@@ -798,7 +800,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Path to forcing CSV with rainfall_mm_h, pet_mm_h, and optional timestamp or dt_hours. "
-            "Mutually exclusive with --openweather-key."
+            "Mutually exclusive with --openmeteo-lat/--openmeteo-lon."
         ),
     )
     parser.add_argument(
@@ -827,37 +829,30 @@ def parse_args() -> argparse.Namespace:
         help="Print available vegetation types with their rooting depths and exit.",
     )
 
-    # OpenWeather options
-    ow_group = parser.add_argument_group("OpenWeatherMap forcing (alternative to --forcing-csv)")
-    ow_group.add_argument(
-        "--openweather-key",
-        type=str,
-        default=None,
-        metavar="API_KEY",
-        help="OpenWeatherMap API key (One Call API 3.0). Fetches observed + 7-day forecast.",
-    )
-    ow_group.add_argument(
-        "--openweather-lat",
+    # Open-Meteo options
+    om_group = parser.add_argument_group("Open-Meteo forcing (alternative to --forcing-csv)")
+    om_group.add_argument(
+        "--openmeteo-lat",
         type=float,
         default=None,
         metavar="LAT",
-        help="Site latitude in decimal degrees (required with --openweather-key).",
+        help="Site latitude in decimal degrees. Fetches observed + 16-day forecast from Open-Meteo (no API key required).",
     )
-    ow_group.add_argument(
-        "--openweather-lon",
+    om_group.add_argument(
+        "--openmeteo-lon",
         type=float,
         default=None,
         metavar="LON",
-        help="Site longitude in decimal degrees (required with --openweather-key).",
+        help="Site longitude in decimal degrees (required with --openmeteo-lat).",
     )
-    ow_group.add_argument(
-        "--openweather-historical-days",
+    om_group.add_argument(
+        "--openmeteo-historical-days",
         type=int,
         default=1,
         metavar="DAYS",
         help=(
-            "Number of past days to fetch via the OpenWeatherMap /timemachine endpoint (1–100). "
-            "Each day requires one extra API call.  Default: 1 (yesterday only)."
+            "Number of past days to fetch from the Open-Meteo archive (1–100). "
+            "Default: 1 (yesterday only)."
         ),
     )
 
@@ -882,26 +877,25 @@ def main() -> None:
         vegetation = VEGETATION_LIBRARY[args.vegetation]
 
     # Resolve forcing source
-    if args.openweather_key is not None:
-        resolved_lat = args.openweather_lat if args.openweather_lat is not None else sim.latitude
-        resolved_lon = args.openweather_lon if args.openweather_lon is not None else sim.longitude
+    if args.openmeteo_lat is not None or args.openmeteo_lon is not None:
+        resolved_lat = args.openmeteo_lat if args.openmeteo_lat is not None else sim.latitude
+        resolved_lon = args.openmeteo_lon if args.openmeteo_lon is not None else sim.longitude
         if resolved_lat is None or resolved_lon is None:
             raise SystemExit(
-                "Error: latitude and longitude are required when using --openweather-key. "
-                "Provide them via --openweather-lat/--openweather-lon or as 'latitude'/'longitude' "
+                "Error: latitude and longitude are required when using Open-Meteo forcing. "
+                "Provide them via --openmeteo-lat/--openmeteo-lon or as 'latitude'/'longitude' "
                 "in the simulation config JSON."
             )
         if args.forcing_csv is not None:
             raise SystemExit(
-                "Error: --forcing-csv and --openweather-key are mutually exclusive."
+                "Error: --forcing-csv and --openmeteo-lat/--openmeteo-lon are mutually exclusive."
             )
-        forcing = fetch_openweather_forcing(
-            api_key=args.openweather_key,
+        forcing = fetch_openmeteo_forcing(
             lat=resolved_lat,
             lon=resolved_lon,
-            historical_days=args.openweather_historical_days,
+            historical_days=args.openmeteo_historical_days,
         )
-        forcing = _process_forcing_df(forcing, sim.default_dt_hours, source_name="OpenWeatherMap")
+        forcing = _process_forcing_df(forcing, sim.default_dt_hours, source_name="Open-Meteo")
     else:
         forcing_csv = args.forcing_csv if args.forcing_csv is not None else Path("forcing_example.csv")
         forcing = read_forcing(forcing_csv, sim.default_dt_hours)

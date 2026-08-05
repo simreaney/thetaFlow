@@ -465,34 +465,30 @@ Available vegetation types (see also `vegetation_types.json`):
 When `--vegetation` is not specified, the model falls back to the original
 surface-layer-only evaporation behaviour.
 
-### Running with OpenWeatherMap forecast forcing
+### Running with Open-Meteo forecast forcing
 
-Instead of a CSV, you can drive the simulation directly from the
-[OpenWeatherMap One Call API 3.0](https://openweathermap.org/api/one-call-3).
-This combines the last 24 h of observed weather with up to 8 days of hourly
-forecast.
-
-You will need a valid OpenWeatherMap API key with the One Call 3.0 subscription.
+Instead of a CSV, you can drive the simulation directly from
+[Open-Meteo](https://open-meteo.com/) — a free, open-source weather API that
+requires no API key.  This combines historical observed data with up to 16 days
+of hourly forecast.
 
 ```bash
 python simulate_soil_column.py \
   --soil-config soil_properties_example.json \
-  --openweather-key YOUR_API_KEY \
-  --openweather-lat 51.5 \
-  --openweather-lon -1.8 \
+  --openmeteo-lat 51.5 \
+  --openmeteo-lon -1.8 \
   --output-dir outputs_forecast
 
 # Combine with a vegetation type
 python simulate_soil_column.py \
   --soil-config soil_properties_example.json \
-  --openweather-key YOUR_API_KEY \
-  --openweather-lat 51.5 \
-  --openweather-lon -1.8 \
+  --openmeteo-lat 51.5 \
+  --openmeteo-lon -1.8 \
   --vegetation wheat \
   --output-dir outputs_forecast_wheat
 ```
 
-The `--forcing-csv` and `--openweather-key` options are mutually exclusive.
+The `--forcing-csv` and `--openmeteo-lat`/`--openmeteo-lon` options are mutually exclusive.
 
 PET is estimated from hourly air temperature using the
 Hargreaves–Samani equation, which requires only temperature and latitude.
@@ -582,7 +578,7 @@ moisture heatmap and profile outputs]
 - Explicit time integration (can require small sub-steps for high conductivity / sharp fronts)
 - When a vegetation type is selected, root-water uptake is distributed uniformly over the
   rooting depth proportional to available water; no stress-factor curve is applied
-- PET from OpenWeatherMap is estimated by the Hargreaves–Samani method (temperature + latitude
+- PET from Open-Meteo is estimated by the Hargreaves–Samani method (temperature + latitude
   only); accuracy is lower than radiation-based methods
 - No hysteresis in the retention curve
 
