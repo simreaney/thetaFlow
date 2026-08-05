@@ -131,6 +131,8 @@ class SimulationConfig:
     green_ampt_wetting_front_suction_m: float = 0.11
     slope_angle_deg: float = 6.0
     hillslope_flow_path_m: float = 1.0
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 @dataclass
@@ -863,9 +865,13 @@ def main() -> None:
 
     # Resolve forcing source
     if args.openweather_key is not None:
-        if args.openweather_lat is None or args.openweather_lon is None:
+        resolved_lat = args.openweather_lat if args.openweather_lat is not None else sim.latitude
+        resolved_lon = args.openweather_lon if args.openweather_lon is not None else sim.longitude
+        if resolved_lat is None or resolved_lon is None:
             raise SystemExit(
-                "Error: --openweather-lat and --openweather-lon are required when using --openweather-key."
+                "Error: latitude and longitude are required when using --openweather-key. "
+                "Provide them via --openweather-lat/--openweather-lon or as 'latitude'/'longitude' "
+                "in the simulation config JSON."
             )
         if args.forcing_csv is not None:
             raise SystemExit(
@@ -873,8 +879,8 @@ def main() -> None:
             )
         forcing = fetch_openweather_forcing(
             api_key=args.openweather_key,
-            lat=args.openweather_lat,
-            lon=args.openweather_lon,
+            lat=resolved_lat,
+            lon=resolved_lon,
         )
         forcing = _process_forcing_df(forcing, sim.default_dt_hours, source_name="OpenWeatherMap")
     else:
