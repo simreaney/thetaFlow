@@ -635,6 +635,7 @@ def fetch_openweather_forcing(
     api_key: str,
     lat: float,
     lon: float,
+    historical_days: int = 1,
 ) -> pd.DataFrame:
     """Fetch hourly observed + forecast forcing from the OpenWeatherMap One Call API 3.0.
 
@@ -642,7 +643,8 @@ def fetch_openweather_forcing(
     ``pet_mm_h`` compatible with :func:`read_forcing`.
 
     The function combines:
-    * Today's observed hourly data (``/timemachine`` for the past 24 h).
+    * Up to ``historical_days`` days of past observed data via ``/timemachine``
+      (one API call per day; max 100 days).
     * Up to 8 days of hourly forecast from the standard One Call endpoint.
 
     PET is estimated from the Hargreaves–Samani equation using temperature and
@@ -657,6 +659,9 @@ def fetch_openweather_forcing(
         Site latitude in decimal degrees.
     lon:
         Site longitude in decimal degrees.
+    historical_days:
+        Number of past days to fetch via the ``/timemachine`` endpoint (1–100).
+        Each day requires one additional API call.  Defaults to 1 (yesterday only).
     """
     try:
         import requests
@@ -668,6 +673,8 @@ def fetch_openweather_forcing(
 
     import math
     from datetime import datetime, timezone, timedelta
+
+    historical_days = max(1, min(int(historical_days), 100))
 
     BASE_URL = "https://api.openweathermap.org/data/3.0/onecall"
 
@@ -707,27 +714,28 @@ def fetch_openweather_forcing(
                 rows.append({"timestamp": ts, "rainfall_mm_h": rain_mm_h, "_temp_c": temp_mean})
 
     # ------------------------------------------------------------------
-    # 2.  Yesterday's observed data via timemachine (last 24 h)
+    # 2.  Historical observed data via timemachine (up to 100 days back)
     # ------------------------------------------------------------------
     now_utc = datetime.now(timezone.utc)
-    yesterday_dt = int((now_utc - timedelta(hours=24)).timestamp())
-    params_hist = {
-        "lat": lat,
-        "lon": lon,
-        "dt": yesterday_dt,
-        "appid": api_key,
-        "units": "metric",
-    }
-    try:
-        resp_hist = requests.get(f"{BASE_URL}/timemachine", params=params_hist, timeout=30)
-        resp_hist.raise_for_status()
-        hist_data = resp_hist.json()
-        for h in hist_data.get("data", []):
-            ts = pd.Timestamp(h["dt"], unit="s", tz="UTC")
-            rain_mm = h.get("rain", {}).get("1h", 0.0)
-            rows.append({"timestamp": ts, "rainfall_mm_h": rain_mm, "_temp_c": h["temp"]})
-    except Exception as exc:  # noqa: BLE001
-        print(f"Warning: could not fetch historical weather data: {exc}")
+    for day_offset in range(1, historical_days + 1):
+        target_dt = int((now_utc - timedelta(days=day_offset)).timestamp())
+        params_hist = {
+            "lat": lat,
+            "lon": lon,
+            "dt": target_dt,
+            "appid": api_key,
+            "units": "metric",
+        }
+        try:
+            resp_hist = requests.get(f"{BASE_URL}/timemachine", params=params_hist, timeout=30)
+            resp_hist.raise_for_status()
+            hist_data = resp_hist.json()
+            for h in hist_data.get("data", []):
+                ts = pd.Timestamp(h["dt"], unit="s", tz="UTC")
+                rain_mm = h.get("rain", {}).get("1h", 0.0)
+                rows.append({"timestamp": ts, "rainfall_mm_h": rain_mm, "_temp_c": h["temp"]})
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: could not fetch historical weather data for day -{day_offset}: {exc}")
 
     if not rows:
         raise ValueError("OpenWeatherMap returned no usable data.")
@@ -842,6 +850,16 @@ def parse_args() -> argparse.Namespace:
         metavar="LON",
         help="Site longitude in decimal degrees (required with --openweather-key).",
     )
+    ow_group.add_argument(
+        "--openweather-historical-days",
+        type=int,
+        default=1,
+        metavar="DAYS",
+        help=(
+            "Number of past days to fetch via the OpenWeatherMap /timemachine endpoint (1–100). "
+            "Each day requires one extra API call.  Default: 1 (yesterday only)."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -881,6 +899,7 @@ def main() -> None:
             api_key=args.openweather_key,
             lat=resolved_lat,
             lon=resolved_lon,
+            historical_days=args.openweather_historical_days,
         )
         forcing = _process_forcing_df(forcing, sim.default_dt_hours, source_name="OpenWeatherMap")
     else:
