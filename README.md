@@ -465,6 +465,42 @@ Available vegetation types (see also `vegetation_types.json`):
 When `--vegetation` is not specified, the model falls back to the original
 surface-layer-only evaporation behaviour.
 
+### Using an X-ray scanner porosity profile
+
+thetaFlow can read a depth–porosity profile measured by an X-ray (CT) scanner
+and use it to replace the uniform saturated water content (θ_s) in the soil
+config with a per-layer value that reflects the real pore structure of the core.
+
+The CSV file must contain two columns:
+
+| Column | Description |
+|--------|-------------|
+| `depth_m` | Depth below surface in metres (non-negative, sorted ascending) |
+| `porosity` | Total porosity at that depth (0 < porosity < 1) |
+
+Additional columns are ignored.  An example file (`xray_porosity_example.csv`) is
+included with the repository.
+
+```bash
+python simulate_soil_column.py \
+  --soil-config soil_properties_example.json \
+  --xray-porosity-csv xray_porosity_example.csv \
+  --output-dir outputs_xray
+
+# Combine with vegetation and live weather
+python simulate_soil_column.py \
+  --soil-config soil_properties_example.json \
+  --xray-porosity-csv xray_porosity_example.csv \
+  --vegetation grass \
+  --openmeteo-lat 51.5 \
+  --openmeteo-lon -1.8 \
+  --output-dir outputs_xray_weather
+```
+
+Porosity measurements are linearly interpolated onto the column grid.  Depths
+outside the measurement range are filled by nearest-neighbour extrapolation
+(the shallowest / deepest measured value).
+
 ### Running with Open-Meteo forecast forcing
 
 Instead of a CSV, you can drive the simulation directly from
@@ -509,6 +545,7 @@ Generated in `outputs/`:
 - `timestamp`: timestamp if provided in forcing
 - `depth_m`: node depth from surface (m)
 - `theta`: volumetric water content (m3/m3)
+- `theta_s`: saturated water content at this node (m3/m3); equals the interpolated X-ray porosity when `--xray-porosity-csv` is used, otherwise the uniform soil value
 - `head_m`: pressure head (m)
 - `conductivity_m_per_s`: unsaturated hydraulic conductivity (m/s)
 

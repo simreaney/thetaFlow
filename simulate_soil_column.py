@@ -147,9 +147,14 @@ def effective_saturation_from_head(head_m: np.ndarray, soil: SoilProperties) -> 
     return np.where(head_m >= 0.0, 1.0, se_unsat)
 
 
-def theta_from_head(head_m: np.ndarray, soil: SoilProperties) -> np.ndarray:
+def theta_from_head(
+    head_m: np.ndarray,
+    soil: SoilProperties,
+    theta_s_profile: Optional[np.ndarray] = None,
+) -> np.ndarray:
     se = effective_saturation_from_head(head_m, soil)
-    return soil.theta_r + se * (soil.theta_s - soil.theta_r)
+    theta_s = theta_s_profile if theta_s_profile is not None else soil.theta_s
+    return soil.theta_r + se * (theta_s - soil.theta_r)
 
 
 def hydraulic_conductivity(head_m: np.ndarray, soil: SoilProperties) -> np.ndarray:
@@ -159,9 +164,14 @@ def hydraulic_conductivity(head_m: np.ndarray, soil: SoilProperties) -> np.ndarr
     return soil.ks_m_per_s * se ** soil.pore_connectivity * term**2
 
 
-def head_from_theta(theta: np.ndarray, soil: SoilProperties) -> np.ndarray:
-    theta = np.clip(theta, soil.theta_r + 1.0e-12, soil.theta_s - 1.0e-12)
-    se = (theta - soil.theta_r) / (soil.theta_s - soil.theta_r)
+def head_from_theta(
+    theta: np.ndarray,
+    soil: SoilProperties,
+    theta_s_profile: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    theta_s = theta_s_profile if theta_s_profile is not None else soil.theta_s
+    theta = np.clip(theta, soil.theta_r + 1.0e-12, theta_s - 1.0e-12)
+    se = (theta - soil.theta_r) / (theta_s - soil.theta_r)
     suction = ((se ** (-1.0 / soil.m) - 1.0) ** (1.0 / soil.n)) / soil.alpha_per_m
     return np.where(se >= 0.999999, 0.0, -suction)
 
@@ -174,6 +184,99 @@ def read_config(config_path: Path) -> tuple[SoilProperties, ColumnConfig, Simula
     column = ColumnConfig(**raw["column"])
     simulation = SimulationConfig(**raw["simulation"])
     return soil, column, simulation
+
+
+def read_xray_porosity(csv_path: Path) -> pd.DataFrame:
+    """Read a depth–porosity profile from an X-ray scanner CSV file.
+
+    The CSV must contain at least two columns:
+
+    * ``depth_m`` – sample depth below the soil surface in metres (non-negative,
+      monotonically increasing).
+    * ``porosity`` – total porosity at that depth (dimensionless, 0 < porosity < 1).
+
+    Additional columns are allowed and will be ignored.
+
+    Returns
+    -------
+    pd.DataFrame
+        Validated DataFrame with ``depth_m`` and ``porosity`` columns, sorted by
+        depth.
+    """
+    df = pd.read_csv(csv_path)
+
+    required = {"depth_m", "porosity"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(
+            f"X-ray porosity CSV '{csv_path}' is missing required columns: {sorted(missing)}. "
+            "Expected columns: depth_m, porosity."
+        )
+
+    df = df[["depth_m", "porosity"]].dropna().sort_values("depth_m").reset_index(drop=True)
+
+    if len(df) < 2:
+        raise ValueError(
+            f"X-ray porosity CSV '{csv_path}' must contain at least 2 valid rows."
+        )
+
+    if (df["depth_m"] < 0).any():
+        raise ValueError("depth_m values must be non-negative.")
+
+    if not (df["porosity"].between(0.0, 1.0, inclusive="neither")).all():
+        bad = df.loc[~df["porosity"].between(0.0, 1.0, inclusive="neither"), "porosity"].values
+        raise ValueError(
+            f"porosity values must be strictly between 0 and 1. Found out-of-range values: {bad}."
+        )
+
+    print(
+        f"Read {len(df)} depth–porosity measurements from '{csv_path.name}' "
+        f"(depth range {df['depth_m'].min():.3f}–{df['depth_m'].max():.3f} m, "
+        f"porosity range {df['porosity'].min():.3f}–{df['porosity'].max():.3f})."
+    )
+    return df
+
+
+def build_porosity_profile(
+    porosity_df: pd.DataFrame,
+    depth_m: np.ndarray,
+    soil: SoilProperties,
+) -> np.ndarray:
+    """Interpolate X-ray porosity measurements onto the column node depths.
+
+    Measured porosity values are linearly interpolated onto the column grid.
+    Depths shallower than the shallowest measurement, or deeper than the deepest
+    measurement, are filled by nearest-neighbour extrapolation (i.e. the first or
+    last measured value is used).
+
+    The interpolated values are used as per-layer ``theta_s`` (saturated water
+    content ≈ total porosity) and are clipped to be strictly greater than
+    ``soil.theta_r`` to maintain physical consistency.
+
+    Parameters
+    ----------
+    porosity_df:
+        DataFrame with ``depth_m`` and ``porosity`` columns as returned by
+        :func:`read_xray_porosity`.
+    depth_m:
+        Node depths of the soil column (metres), as returned by
+        :func:`build_column_geometry`.
+    soil:
+        Soil properties used to enforce ``theta_s > theta_r``.
+
+    Returns
+    -------
+    np.ndarray
+        Per-layer saturated water content (``theta_s``) profile, shape ``(nz,)``.
+    """
+    theta_s_profile = np.interp(
+        depth_m,
+        porosity_df["depth_m"].to_numpy(),
+        porosity_df["porosity"].to_numpy(),
+    )
+    # Ensure theta_s remains physically larger than theta_r
+    theta_s_profile = np.maximum(theta_s_profile, soil.theta_r + 1.0e-4)
+    return theta_s_profile
 
 
 def _process_forcing_df(forcing: pd.DataFrame, default_dt_hours: float, source_name: str = "<dataframe>") -> pd.DataFrame:
@@ -281,6 +384,7 @@ def one_substep(
     min_theta_buffer: float,
     depth_m: Optional[np.ndarray] = None,
     vegetation: Optional[VegetationType] = None,
+    theta_s_profile: Optional[np.ndarray] = None,
 ) -> tuple[SimulationState, dict[str, float], float]:
     theta = state.theta.copy()
     head_m = state.head_m.copy()
@@ -289,6 +393,9 @@ def one_substep(
     pet_flux = max(pet_mm_h, 0.0) / 1000.0 / 3600.0
 
     n = theta.size
+
+    # Effective theta_s per layer (scalar fallback when no profile provided)
+    theta_s_eff = theta_s_profile if theta_s_profile is not None else np.full(n, soil.theta_s)
 
     if vegetation is not None and vegetation.rooting_depth_m > 0.0 and depth_m is not None:
         # Root-zone uptake: distributed across layers; no surface-only ET deduction
@@ -306,7 +413,7 @@ def one_substep(
         aet_sink = np.zeros(n)
 
     conductivity = hydraulic_conductivity(head_m, soil)
-    theta_deficit = max(soil.theta_s - theta[0], 1.0e-6)
+    theta_deficit = max(float(theta_s_eff[0]) - theta[0], 1.0e-6)
     cumulative_for_capacity = max(cumulative_infiltration_m, 1.0e-6)
     infiltration_capacity_flux = soil.ks_m_per_s * (
         1.0 + (sim.green_ampt_wetting_front_suction_m * theta_deficit) / cumulative_for_capacity
@@ -338,8 +445,8 @@ def one_substep(
     lateral_sink_rate = lateral_flux_layers / max(sim.hillslope_flow_path_m, 1.0e-9)
 
     theta_new = theta + dt_s * (vertical_dtheta_rate - lateral_sink_rate - aet_sink)
-    theta_new = np.clip(theta_new, soil.theta_r + 1.0e-8, soil.theta_s - 1.0e-8)
-    head_new = head_from_theta(theta_new, soil)
+    theta_new = np.clip(theta_new, soil.theta_r + 1.0e-8, theta_s_eff - 1.0e-8)
+    head_new = head_from_theta(theta_new, soil, theta_s_profile=theta_s_profile)
 
     lateral_throughflow_flux = float(np.sum(lateral_flux_layers) * dz_m / max(sim.hillslope_flow_path_m, 1.0e-9))
 
@@ -373,12 +480,15 @@ def estimate_stable_dt_seconds(
     min_dt_seconds: float,
     depth_m: Optional[np.ndarray] = None,
     vegetation: Optional[VegetationType] = None,
+    theta_s_profile: Optional[np.ndarray] = None,
 ) -> float:
     theta = state.theta
     head_m = state.head_m
 
     rain_flux = rainfall_mm_h / 1000.0 / 3600.0
     pet_flux = max(pet_mm_h, 0.0) / 1000.0 / 3600.0
+
+    theta_s_eff = theta_s_profile if theta_s_profile is not None else np.full(theta.size, soil.theta_s)
 
     if vegetation is not None and vegetation.rooting_depth_m > 0.0 and depth_m is not None:
         aet_sink = _root_uptake_sink(
@@ -394,7 +504,7 @@ def estimate_stable_dt_seconds(
         aet_sink = np.zeros(theta.size)
 
     conductivity = hydraulic_conductivity(head_m, soil)
-    theta_deficit = max(soil.theta_s - theta[0], 1.0e-6)
+    theta_deficit = max(float(theta_s_eff[0]) - theta[0], 1.0e-6)
     cumulative_for_capacity = max(cumulative_infiltration_m, 1.0e-6)
     infiltration_capacity_flux = soil.ks_m_per_s * (
         1.0 + (sim.green_ampt_wetting_front_suction_m * theta_deficit) / cumulative_for_capacity
@@ -437,13 +547,24 @@ def run_simulation(
     forcing: pd.DataFrame,
     output_dir: Path,
     vegetation: Optional[VegetationType] = None,
+    porosity_df: Optional[pd.DataFrame] = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     column_nodes, depth_m = build_column_geometry(column.nz, column.dz_m)
 
+    # Build per-layer theta_s profile from X-ray porosity data (if provided)
+    theta_s_profile: Optional[np.ndarray] = None
+    if porosity_df is not None:
+        theta_s_profile = build_porosity_profile(porosity_df, depth_m, soil)
+        print(
+            f"X-ray porosity profile applied: theta_s range "
+            f"{theta_s_profile.min():.3f}–{theta_s_profile.max():.3f} "
+            f"(base soil theta_s = {soil.theta_s:.3f})."
+        )
+
     initial_head = np.full(column.nz, sim.initial_head_m, dtype=float)
-    initial_theta = theta_from_head(initial_head, soil)
+    initial_theta = theta_from_head(initial_head, soil, theta_s_profile=theta_s_profile)
     state = SimulationState(head_m=initial_head, theta=initial_theta)
 
     if vegetation is not None:
@@ -490,6 +611,7 @@ def run_simulation(
                 sim.min_substep_seconds,
                 depth_m=depth_m,
                 vegetation=vegetation,
+                theta_s_profile=theta_s_profile,
             )
             dt_s = min(candidate_max_dt, stable_dt, remaining_s)
 
@@ -505,6 +627,7 @@ def run_simulation(
                 sim.min_theta_buffer,
                 depth_m=depth_m,
                 vegetation=vegetation,
+                theta_s_profile=theta_s_profile,
             )
 
             if not (np.all(np.isfinite(state.theta)) and np.all(np.isfinite(state.head_m))):
@@ -524,6 +647,7 @@ def run_simulation(
         timestamp = row["timestamp"] if "timestamp" in forcing.columns else pd.NaT
 
         for node in range(column.nz):
+            node_theta_s = float(theta_s_profile[node]) if theta_s_profile is not None else soil.theta_s
             profiles.append(
                 {
                     "step": i,
@@ -531,6 +655,7 @@ def run_simulation(
                     "timestamp": timestamp,
                     "depth_m": depth_m[node],
                     "theta": state.theta[node],
+                    "theta_s": node_theta_s,
                     "head_m": state.head_m[node],
                     "conductivity_m_per_s": conductivity[node],
                 }
@@ -856,6 +981,20 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    # X-ray porosity options
+    parser.add_argument(
+        "--xray-porosity-csv",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Path to a CSV file from an X-ray scanner with columns 'depth_m' and 'porosity'. "
+            "The porosity values are linearly interpolated onto the column grid and used as "
+            "per-layer saturated water content (theta_s), overriding the uniform value in the "
+            "soil config."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -875,6 +1014,11 @@ def main() -> None:
     vegetation: Optional[VegetationType] = None
     if args.vegetation is not None:
         vegetation = VEGETATION_LIBRARY[args.vegetation]
+
+    # Resolve X-ray porosity profile
+    porosity_df: Optional[pd.DataFrame] = None
+    if args.xray_porosity_csv is not None:
+        porosity_df = read_xray_porosity(args.xray_porosity_csv)
 
     # Resolve forcing source
     if args.openmeteo_lat is not None or args.openmeteo_lon is not None:
@@ -900,7 +1044,7 @@ def main() -> None:
         forcing_csv = args.forcing_csv if args.forcing_csv is not None else Path("forcing_example.csv")
         forcing = read_forcing(forcing_csv, sim.default_dt_hours)
 
-    run_simulation(soil, column, sim, forcing, args.output_dir, vegetation=vegetation)
+    run_simulation(soil, column, sim, forcing, args.output_dir, vegetation=vegetation, porosity_df=porosity_df)
 
 
 if __name__ == "__main__":
