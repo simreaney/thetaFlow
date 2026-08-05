@@ -421,6 +421,83 @@ python simulate_soil_column.py \
 
 Custom paths are fully supported via these command-line arguments.
 
+### Running with a vegetation type
+
+To include root-zone water uptake, specify a vegetation type with `--vegetation`.
+The model distributes ET demand across the rooting depth rather than removing water
+from the surface layer only.
+
+```bash
+# List all available vegetation types with rooting depths
+python simulate_soil_column.py --list-vegetation
+
+# Simulate with wheat (1 m rooting depth)
+python simulate_soil_column.py \
+  --soil-config soil_properties_example.json \
+  --forcing-csv forcing_example.csv \
+  --vegetation wheat \
+  --output-dir outputs_wheat
+
+# Simulate with broadleaf woodland (1.5 m rooting depth)
+python simulate_soil_column.py \
+  --soil-config soil_properties_example.json \
+  --forcing-csv forcing_example.csv \
+  --vegetation broadleaf_woodland \
+  --output-dir outputs_woodland
+```
+
+Available vegetation types (see also `vegetation_types.json`):
+
+| Name                | Rooting depth (m) | PET scale | Description                                      |
+|---------------------|:-----------------:|:---------:|--------------------------------------------------|
+| `grass`             | 0.30              | 1.00      | Short managed or natural grass sward             |
+| `broadleaf_woodland`| 1.50              | 1.10      | Deciduous broadleaf trees                        |
+| `coniferous_woodland`| 1.20             | 1.05      | Evergreen coniferous plantation or native forest |
+| `moorland`          | 0.20              | 0.70      | Upland heath and blanket bog                     |
+| `wheat`             | 1.00              | 1.00      | Winter or spring wheat                           |
+| `maize`             | 1.20              | 1.15      | Silage or grain maize                            |
+| `oilseed_rape`      | 0.90              | 1.00      | Winter oilseed rape (canola)                     |
+| `sugar_beet`        | 1.00              | 1.00      | Sugar beet root crop                             |
+| `potato`            | 0.60              | 1.05      | Potato tuber crop                                |
+| `bare_soil`         | 0.00              | 0.30      | No vegetation; surface evaporation only          |
+| `urban`             | 0.10              | 0.20      | Urban mix with mostly impervious surfaces        |
+
+When `--vegetation` is not specified, the model falls back to the original
+surface-layer-only evaporation behaviour.
+
+### Running with OpenWeatherMap forecast forcing
+
+Instead of a CSV, you can drive the simulation directly from the
+[OpenWeatherMap One Call API 3.0](https://openweathermap.org/api/one-call-3).
+This combines the last 24 h of observed weather with up to 8 days of hourly
+forecast.
+
+You will need a valid OpenWeatherMap API key with the One Call 3.0 subscription.
+
+```bash
+python simulate_soil_column.py \
+  --soil-config soil_properties_example.json \
+  --openweather-key YOUR_API_KEY \
+  --openweather-lat 51.5 \
+  --openweather-lon -1.8 \
+  --output-dir outputs_forecast
+
+# Combine with a vegetation type
+python simulate_soil_column.py \
+  --soil-config soil_properties_example.json \
+  --openweather-key YOUR_API_KEY \
+  --openweather-lat 51.5 \
+  --openweather-lon -1.8 \
+  --vegetation wheat \
+  --output-dir outputs_forecast_wheat
+```
+
+The `--forcing-csv` and `--openweather-key` options are mutually exclusive.
+
+PET is estimated from hourly air temperature using the
+Hargreaves–Samani equation, which requires only temperature and latitude.
+For higher-accuracy PET, supply your own forcing CSV with pre-computed PET values.
+
 ## Outputs
 
 Generated in `outputs/`:
@@ -503,7 +580,10 @@ moisture heatmap and profile outputs]
 - Vertical Richards flow with an added lateral throughflow sink term for hillslopes
 - Homogeneous soil hydraulic properties with depth
 - Explicit time integration (can require small sub-steps for high conductivity / sharp fronts)
-- PET is treated as near-surface evaporative demand (no explicit root profile yet)
+- When a vegetation type is selected, root-water uptake is distributed uniformly over the
+  rooting depth proportional to available water; no stress-factor curve is applied
+- PET from OpenWeatherMap is estimated by the Hargreaves–Samani method (temperature + latitude
+  only); accuracy is lower than radiation-based methods
 - No hysteresis in the retention curve
 
 ## Notes on Physics and Stability
@@ -526,7 +606,7 @@ and re-test mass-balance diagnostics.
 
 ## Suggested Extensions
 
-- Add depth-distributed root water uptake function
 - Add alternative lower boundary (fixed head / fluctuating water table)
 - Add calibration workflow against observed profile moisture
 - Export additional plots (profile snapshots, cumulative infiltration, cumulative ET)
+- Add radiation-based PET (Penman-Monteith) when solar radiation is available from the API
