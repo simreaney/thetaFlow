@@ -20,6 +20,8 @@
     "min_substep_seconds": 1.0,
     "green_ampt_wetting_front_suction_m": 0.11,
     "slope_angle_deg": 6.0,
-    "hillslope_flow_path_m": 1.0
+    "hillslope_flow_path_m": 1.0,
+    "latitude": 51.5,
+    "longitude": -0.1
   }
 }

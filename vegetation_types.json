@@ -1,0 +1,70 @@
+{
+  "vegetation_types": [
+    {
+      "name": "grass",
+      "rooting_depth_m": 0.30,
+      "pet_scale": 1.0,
+      "description": "Short managed or natural grass sward."
+    },
+    {
+      "name": "broadleaf_woodland",
+      "rooting_depth_m": 1.50,
+      "pet_scale": 1.1,
+      "description": "Deciduous broadleaf trees (oak, ash, beech, etc.)."
+    },
+    {
+      "name": "coniferous_woodland",
+      "rooting_depth_m": 1.20,
+      "pet_scale": 1.05,
+      "description": "Evergreen coniferous plantation or native forest."
+    },
+    {
+      "name": "moorland",
+      "rooting_depth_m": 0.20,
+      "pet_scale": 0.7,
+      "description": "Upland heath and blanket bog dominated by heather and sedge."
+    },
+    {
+      "name": "wheat",
+      "rooting_depth_m": 1.00,
+      "pet_scale": 1.0,
+      "description": "Winter or spring wheat cereal crop."
+    },
+    {
+      "name": "maize",
+      "rooting_depth_m": 1.20,
+      "pet_scale": 1.15,
+      "description": "Silage or grain maize."
+    },
+    {
+      "name": "oilseed_rape",
+      "rooting_depth_m": 0.90,
+      "pet_scale": 1.0,
+      "description": "Winter oilseed rape (canola)."
+    },
+    {
+      "name": "sugar_beet",
+      "rooting_depth_m": 1.00,
+      "pet_scale": 1.0,
+      "description": "Sugar beet root crop."
+    },
+    {
+      "name": "potato",
+      "rooting_depth_m": 0.60,
+      "pet_scale": 1.05,
+      "description": "Potato tuber crop."
+    },
+    {
+      "name": "bare_soil",
+      "rooting_depth_m": 0.0,
+      "pet_scale": 0.3,
+      "description": "No vegetation; evaporation from soil surface only."
+    },
+    {
+      "name": "urban",
+      "rooting_depth_m": 0.10,
+      "pet_scale": 0.2,
+      "description": "Urban or suburban mix with mostly impervious surfaces."
+    }
+  ]
+}
