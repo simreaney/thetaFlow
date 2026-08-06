@@ -756,6 +756,35 @@ def plot_moisture_heatmap(
     plt.close(fig)
 
 
+def _hargreaves_pet_mm_h(timestamp: pd.Timestamp, temp_c: float, lat_rad: float) -> float:
+    """Hargreaves–Samani PET estimate (mm/h) for a single hourly record.
+
+    Uses latitude-based extra-terrestrial radiation for the day of year. We
+    don't have Tmax/Tmin per hour so a conservative Trange of 1.0 is used
+    (gives a minimum PET estimate; still reasonable for soil moisture
+    simulation).
+    """
+    import math
+
+    day_of_year = timestamp.day_of_year
+    dr = 1.0 + 0.033 * math.cos(2.0 * math.pi * day_of_year / 365.0)
+    delta = 0.409 * math.sin(2.0 * math.pi * day_of_year / 365.0 - 1.39)
+    omega_s = math.acos(-math.tan(lat_rad) * math.tan(delta))
+    ra = (
+        24.0
+        * 60.0
+        / math.pi
+        * 0.0820
+        * dr
+        * (
+            omega_s * math.sin(lat_rad) * math.sin(delta)
+            + math.cos(lat_rad) * math.cos(delta) * math.sin(omega_s)
+        )
+    )  # MJ/m²/day
+    et0_mm_day = max(0.0023 * ra * (temp_c + 17.8) * 1.0, 0.0)
+    return et0_mm_day / 24.0
+
+
 def fetch_openmeteo_forcing(
     lat: float,
     lon: float,
@@ -874,34 +903,10 @@ def fetch_openmeteo_forcing(
     # 3.  Estimate PET using Hargreaves–Samani simplified equation
     # ------------------------------------------------------------------
     lat_rad = math.radians(lat)
-
-    def _pet_mm_h(row: pd.Series) -> float:
-        """Hargreaves–Samani PET, returned as mm/h."""
-        ts = row["timestamp"]
-        day_of_year = ts.day_of_year
-        # Extra-terrestrial radiation (MJ/m²/day)
-        dr = 1.0 + 0.033 * math.cos(2.0 * math.pi * day_of_year / 365.0)
-        delta = 0.409 * math.sin(2.0 * math.pi * day_of_year / 365.0 - 1.39)
-        omega_s = math.acos(-math.tan(lat_rad) * math.tan(delta))
-        ra = (
-            24.0
-            * 60.0
-            / math.pi
-            * 0.0820
-            * dr
-            * (
-                omega_s * math.sin(lat_rad) * math.sin(delta)
-                + math.cos(lat_rad) * math.cos(delta) * math.sin(omega_s)
-            )
-        )  # MJ/m²/day
-        # Hargreaves–Samani: ET0 (mm/day) = 0.0023 * Ra * (Tmean + 17.8) * sqrt(Trange)
-        # We don't have Tmax/Tmin per hour so use a conservative Trange estimate of 0
-        # (gives minimum PET estimate; still reasonable for soil moisture simulation)
-        t_mean = float(row["_temp_c"])
-        et0_mm_day = max(0.0023 * ra * (t_mean + 17.8) * 1.0, 0.0)
-        return et0_mm_day / 24.0
-
-    df["pet_mm_h"] = df.apply(_pet_mm_h, axis=1)
+    df["pet_mm_h"] = df.apply(
+        lambda row: _hargreaves_pet_mm_h(row["timestamp"], float(row["_temp_c"]), lat_rad),
+        axis=1,
+    )
     df = df.drop(columns=["_temp_c"])
 
     print(
@@ -909,6 +914,179 @@ def fetch_openmeteo_forcing(
         f"({df['timestamp'].min()} – {df['timestamp'].max()})"
     )
     return df
+
+
+def fetch_openmeteo_ensemble_forcing(
+    lat: float,
+    lon: float,
+    historical_days: int = 1,
+    forecast_days: int = 16,
+    model: str = "icon_seamless",
+    max_members: Optional[int] = None,
+) -> tuple[dict[str, pd.DataFrame], pd.Timestamp]:
+    """Fetch an ensemble of future forecasts (+ one shared historical record) from Open-Meteo.
+
+    Combines:
+    * Up to ``historical_days`` days of past *observed* data via the Open-Meteo
+      Historical Weather API (``/v1/archive``) — identical for every member,
+      since the past is already known and only the future is uncertain.
+    * Up to ``forecast_days`` days of hourly *ensemble* forecast from the
+      Open-Meteo Ensemble API (``/v1/ensemble``), which runs the same weather
+      model many times from slightly perturbed initial conditions/physics to
+      sample forecast uncertainty (e.g. ``icon_seamless`` gives 1 control run
+      + ~40 perturbed members; ``gfs_seamless`` gives 1 control run + 30).
+
+    Parameters
+    ----------
+    lat, lon:
+        Site coordinates in decimal degrees.
+    historical_days:
+        Number of past days to fetch from the historical archive (1-100).
+    forecast_days:
+        Number of future days to fetch from the ensemble forecast (1-35,
+        model-dependent).
+    model:
+        Open-Meteo ensemble model name, e.g. ``"icon_seamless"`` (default),
+        ``"gfs_seamless"``, ``"ecmwf_ifs025"``, ``"gem_global"``.
+    max_members:
+        If set, only simulate the control run plus this many perturbed
+        members (keeps runtime manageable). ``None`` uses every member the
+        model provides.
+
+    Returns
+    -------
+    tuple[dict[str, pd.DataFrame], pd.Timestamp]
+        A dict keyed by member name (``"control"``, ``"member01"``,
+        ``"member02"``, …), each a DataFrame with ``timestamp``,
+        ``rainfall_mm_h``, ``pet_mm_h`` spanning the historical window
+        through the forecast horizon — compatible with :func:`read_forcing`.
+        All members share the same historical portion; only the forecast
+        portion differs. The second element is the timestamp where the
+        shared history ends and the per-member forecast begins (useful for
+        marking the boundary on a plot — note that individual members can
+        still agree exactly for a while after this point if the forecast
+        happens to be dry/calm across the ensemble).
+    """
+    try:
+        import requests
+    except ImportError as exc:
+        raise ImportError(
+            "The 'requests' package is required for Open-Meteo integration. "
+            "Install it with: pip install requests"
+        ) from exc
+
+    import math
+    from datetime import datetime, timezone, timedelta
+
+    historical_days = max(1, min(int(historical_days), 100))
+    forecast_days = max(1, min(int(forecast_days), 35))
+
+    ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
+    ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+
+    lat_rad = math.radians(lat)
+
+    # ------------------------------------------------------------------
+    # 1.  Historical observed data (shared across all members)
+    # ------------------------------------------------------------------
+    hist_rows: list[dict] = []
+    now_utc = datetime.now(timezone.utc)
+    end_date = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
+    start_date = (now_utc - timedelta(days=historical_days)).strftime("%Y-%m-%d")
+    try:
+        params_hist = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": start_date,
+            "end_date": end_date,
+            "hourly": "temperature_2m,precipitation",
+            "timezone": "UTC",
+        }
+        resp_hist = requests.get(ARCHIVE_URL, params=params_hist, timeout=30)
+        resp_hist.raise_for_status()
+        hist = resp_hist.json()
+        hourly_hist = hist.get("hourly", {})
+        for t, temp, precip in zip(
+            hourly_hist.get("time", []),
+            hourly_hist.get("temperature_2m", []),
+            hourly_hist.get("precipitation", []),
+        ):
+            ts = pd.Timestamp(t, tz="UTC")
+            temp_c = float(temp) if temp is not None else 0.0
+            hist_rows.append({
+                "timestamp": ts,
+                "rainfall_mm_h": float(precip) if precip is not None else 0.0,
+                "pet_mm_h": _hargreaves_pet_mm_h(ts, temp_c, lat_rad),
+            })
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: could not fetch historical weather data from Open-Meteo archive: {exc}")
+
+    hist_df = pd.DataFrame(hist_rows)
+    if not hist_df.empty:
+        hist_df = hist_df.sort_values("timestamp").drop_duplicates(subset="timestamp").reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    # 2.  Ensemble forecast: same model run many times from perturbed
+    #     initial conditions to sample forecast uncertainty.
+    # ------------------------------------------------------------------
+    params_fc = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,precipitation",
+        "models": model,
+        "forecast_days": forecast_days,
+        "timezone": "UTC",
+    }
+    resp_fc = requests.get(ENSEMBLE_URL, params=params_fc, timeout=30)
+    resp_fc.raise_for_status()
+    fc = resp_fc.json()
+    hourly_fc = fc.get("hourly", {})
+    times_fc = hourly_fc.get("time", [])
+    if not times_fc:
+        raise ValueError(f"Open-Meteo ensemble API returned no data for model '{model}'.")
+
+    # Member suffixes: "" is the unperturbed control run, "_member01",
+    # "_member02", ... are the perturbed ensemble members.
+    member_suffixes = [""] + sorted(
+        {
+            key[len("temperature_2m"):]
+            for key in hourly_fc
+            if key.startswith("temperature_2m_member")
+        },
+        key=lambda s: int(s.rsplit("member", 1)[1]),
+    )
+    if max_members is not None:
+        member_suffixes = member_suffixes[:1] + member_suffixes[1 : 1 + max(0, int(max_members))]
+
+    ts_fc = [pd.Timestamp(t, tz="UTC") for t in times_fc]
+
+    forcing_by_member: dict[str, pd.DataFrame] = {}
+    for suffix in member_suffixes:
+        member_name = "control" if suffix == "" else suffix.lstrip("_")
+        temps = hourly_fc.get(f"temperature_2m{suffix}", [])
+        precips = hourly_fc.get(f"precipitation{suffix}", [])
+        fc_rows = [
+            {
+                "timestamp": ts,
+                "rainfall_mm_h": float(precip) if precip is not None else 0.0,
+                "pet_mm_h": _hargreaves_pet_mm_h(ts, float(temp) if temp is not None else 0.0, lat_rad),
+            }
+            for ts, temp, precip in zip(ts_fc, temps, precips)
+        ]
+        fc_df = pd.DataFrame(fc_rows)
+
+        combined = pd.concat([hist_df, fc_df], ignore_index=True) if not hist_df.empty else fc_df
+        combined = combined.sort_values("timestamp").drop_duplicates(subset="timestamp").reset_index(drop=True)
+        forcing_by_member[member_name] = combined
+
+    n_members = len(forcing_by_member)
+    n_hours = len(next(iter(forcing_by_member.values())))
+    forecast_start = ts_fc[0]
+    print(
+        f"Fetched {n_members} ensemble members ({model}) x {n_hours} hourly records from Open-Meteo "
+        f"(history from {start_date}, forecast from {forecast_start.date()} to {ts_fc[-1].date()})"
+    )
+    return forcing_by_member, forecast_start
 
 
 def parse_args() -> argparse.Namespace:
