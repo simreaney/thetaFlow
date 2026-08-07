@@ -14,10 +14,9 @@ python benchmark.py --grid-size 5 --steps 6
 from __future__ import annotations
 
 import argparse
-import io
+import os
 import sys
 import time
-from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Optional
 
@@ -136,43 +135,41 @@ def run_benchmark(
         output_dir = Path(_tmp_dir.name)
 
     # --- Run ---
+    # Suppress simulation output unless verbose is requested.  We redirect
+    # at the OS file-descriptor level so that both main-process prints and any
+    # output written directly to fd 1 by worker subprocesses are silenced.
+    _devnull = None
+    _saved_fd = None
     try:
+        if not verbose:
+            _devnull = open(os.devnull, "w")  # noqa: SIM115
+            _saved_fd = os.dup(sys.stdout.fileno())
+            os.dup2(_devnull.fileno(), sys.stdout.fileno())
+            sys.stdout.flush()
+
         t0 = time.monotonic()
-
-        if verbose:
-            run_spatial_simulation(
-                dem=dem,
-                landcover_codes=None,
-                soil_codes=None,
-                veg_json_path=Path("vegetation_types.json"),
-                soil_types_json_path=None,
-                code_to_veg_name={},
-                forcing_uniform=forcing_df,
-                forcing_gridded=None,
-                cfg=cfg,
-                output_dir=output_dir,
-                n_workers=n_workers,
-                use_gpu=False,
-            )
-        else:
-            with redirect_stdout(io.StringIO()):
-                run_spatial_simulation(
-                    dem=dem,
-                    landcover_codes=None,
-                    soil_codes=None,
-                    veg_json_path=Path("vegetation_types.json"),
-                    soil_types_json_path=None,
-                    code_to_veg_name={},
-                    forcing_uniform=forcing_df,
-                    forcing_gridded=None,
-                    cfg=cfg,
-                    output_dir=output_dir,
-                    n_workers=n_workers,
-                    use_gpu=False,
-                )
-
+        run_spatial_simulation(
+            dem=dem,
+            landcover_codes=None,
+            soil_codes=None,
+            veg_json_path=Path("vegetation_types.json"),
+            soil_types_json_path=None,
+            code_to_veg_name={},
+            forcing_uniform=forcing_df,
+            forcing_gridded=None,
+            cfg=cfg,
+            output_dir=output_dir,
+            n_workers=n_workers,
+            use_gpu=False,
+        )
         wall_time = time.monotonic() - t0
     finally:
+        if _saved_fd is not None:
+            sys.stdout.flush()
+            os.dup2(_saved_fd, sys.stdout.fileno())
+            os.close(_saved_fd)
+        if _devnull is not None:
+            _devnull.close()
         if _tmp_dir is not None:
             _tmp_dir.cleanup()
 
