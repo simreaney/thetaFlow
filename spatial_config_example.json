@@ -1,0 +1,38 @@
+{
+  "_comment": "Example spatial configuration for simulate_spatial.py.",
+
+  "cell_size_m": 50.0,
+
+  "column": {
+    "nz": 50,
+    "dz_m": 0.02
+  },
+
+  "simulation": {
+    "initial_head_m": -1.0,
+    "default_dt_hours": 1.0,
+    "max_substep_seconds": 60.0,
+    "min_theta_buffer": 0.002,
+    "max_dtheta_per_substep": 0.002,
+    "min_substep_seconds": 1.0,
+    "green_ampt_wetting_front_suction_m": 0.11,
+    "hillslope_flow_path_m": 50.0,
+    "latitude": 51.5,
+    "longitude": -0.1
+  },
+
+  "fd8_exponent": 1.1,
+
+  "darcy_weisbach_f_overrides": {
+    "_comment": "Optional per-vegetation-name friction factor overrides. Keys must match vegetation_types.json 'name' fields.",
+    "urban": 0.08,
+    "bare_soil": 0.25
+  },
+
+  "output": {
+    "save_npy_arrays": true,
+    "snapshot_interval_steps": 1,
+    "animation_fps": 4,
+    "quiver_stride": 2
+  }
+}
