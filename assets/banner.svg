@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 200" width="900" height="200">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgBanner" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0D1F33"/>
+      <stop offset="60%" stop-color="#1A3A5C"/>
+      <stop offset="100%" stop-color="#0D2B45"/>
+    </linearGradient>
+    <!-- Soil layer gradients -->
+    <linearGradient id="layer1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8B6914"/>
+      <stop offset="100%" stop-color="#6B4F10"/>
+    </linearGradient>
+    <linearGradient id="layer2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#A07840"/>
+      <stop offset="100%" stop-color="#7A5B28"/>
+    </linearGradient>
+    <linearGradient id="layer3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#C4A060"/>
+      <stop offset="100%" stop-color="#9C7A40"/>
+    </linearGradient>
+    <!-- Water gradient -->
+    <linearGradient id="waterG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#81D4FA" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0277BD" stop-opacity="0.7"/>
+    </linearGradient>
+    <!-- Title gradient -->
+    <linearGradient id="titleGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E3F2FD"/>
+      <stop offset="50%" stop-color="#81D4FA"/>
+      <stop offset="100%" stop-color="#4FC3F7"/>
+    </linearGradient>
+    <!-- Clip for left panel soil column -->
+    <clipPath id="leftPanel">
+      <rect x="0" y="0" width="200" height="200"/>
+    </clipPath>
+  </defs>
+
+  <!-- ── Background ── -->
+  <rect width="900" height="200" fill="url(#bgBanner)" rx="14"/>
+
+  <!-- ── Left decorative soil column ── -->
+  <g clip-path="url(#leftPanel)" opacity="0.55">
+    <rect x="0" y="70" width="200" height="40"  fill="url(#layer1)"/>
+    <rect x="0" y="110" width="200" height="45" fill="url(#layer2)"/>
+    <rect x="0" y="155" width="200" height="45" fill="url(#layer3)"/>
+    <!-- Flowing water lines -->
+    <path d="M30,0 C30,0 40,18 30,36 C20,54 36,72 30,90 C24,108 38,126 30,144 C24,162 30,200 30,200"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M70,0 C70,0 80,18 70,36 C60,54 76,72 70,90 C64,108 78,126 70,144 C64,162 70,200 70,200"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M110,0 C110,0 120,18 110,36 C100,54 116,72 110,90 C104,108 118,126 110,144 C104,162 110,200 110,200"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M150,0 C150,0 160,18 150,36 C140,54 156,72 150,90 C144,108 158,126 150,144 C144,162 150,200 150,200"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M190,0 C190,0 200,18 190,36 C180,54 196,72 190,90 C184,108 198,126 190,144 C184,162 190,200 190,200"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Fade overlay to blend left panel into main area -->
+  <defs>
+    <linearGradient id="fadeLeft" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#0D1F33" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1A3A5C" stop-opacity="1"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="220" height="200" fill="url(#fadeLeft)" rx="14"/>
+
+  <!-- ── Logo circle ── -->
+  <defs>
+    <radialGradient id="logoBg" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#1A3A5C"/>
+      <stop offset="100%" stop-color="#0D1F33"/>
+    </radialGradient>
+    <clipPath id="logoCircle">
+      <circle cx="110" cy="100" r="54"/>
+    </clipPath>
+  </defs>
+  <circle cx="110" cy="100" r="57" fill="url(#logoBg)" stroke="#4FC3F7" stroke-width="2"/>
+  <g clip-path="url(#logoCircle)">
+    <rect x="56" y="120" width="108" height="18"  fill="url(#layer1)"/>
+    <rect x="56" y="138" width="108" height="20"  fill="url(#layer2)"/>
+    <rect x="56" y="158" width="108" height="20"  fill="url(#layer3)"/>
+    <!-- Flow lines inside logo -->
+    <path d="M88,46 C88,46 95,60 88,74 C81,88 94,102 88,116 C82,130 93,144 88,154"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>
+    <path d="M110,42 C110,42 117,56 110,70 C103,84 116,98 110,112 C104,126 115,140 110,154"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>
+    <path d="M132,46 C132,46 139,60 132,74 C125,88 138,102 132,116 C126,130 137,144 132,154"
+          fill="none" stroke="url(#waterG)" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>
+    <ellipse cx="88"  cy="46" rx="4" ry="6" fill="#4FC3F7" opacity="0.9"/>
+    <ellipse cx="110" cy="42" rx="4" ry="6" fill="#4FC3F7" opacity="0.9"/>
+    <ellipse cx="132" cy="46" rx="4" ry="6" fill="#4FC3F7" opacity="0.9"/>
+  </g>
+  <text x="110" y="94" font-family="Georgia, serif" font-size="32" font-weight="bold"
+        text-anchor="middle" fill="#E3F2FD" opacity="0.95">θ</text>
+
+  <!-- ── Main title ── -->
+  <text x="300" y="88" font-family="'Segoe UI', Arial, sans-serif" font-size="62"
+        font-weight="700" text-anchor="start" fill="url(#titleGrad)" letter-spacing="2">
+    ThetaFlow
+  </text>
+
+  <!-- ── Subtitle / tagline ── -->
+  <text x="302" y="122" font-family="'Segoe UI', Arial, sans-serif" font-size="19"
+        font-weight="400" text-anchor="start" fill="#81D4FA" letter-spacing="1" opacity="0.88">
+    Richards Equation · Vadose-Zone Dynamics · 1D Soil Column
+  </text>
+
+  <!-- ── Divider line ── -->
+  <line x1="300" y1="134" x2="860" y2="134" stroke="#4FC3F7" stroke-width="1" opacity="0.35"/>
+
+  <!-- ── Feature tags ── -->
+  <g font-family="'Segoe UI', Arial, sans-serif" font-size="13.5" fill="#B3E5FC" opacity="0.80">
+    <text x="302" y="158">▸ Van Genuchten–Mualem hydraulics</text>
+    <text x="302" y="179">▸ Hillslope lateral throughflow  ·  Rainfall &amp; PET forcing  ·  NumPy-based</text>
+  </g>
+
+  <!-- ── Right decorative wave/sinusoid ── -->
+  <g opacity="0.18">
+    <path d="M820,20 C830,50 850,70 820,100 C790,130 810,150 820,180"
+          fill="none" stroke="#4FC3F7" stroke-width="18" stroke-linecap="round"/>
+    <path d="M855,10 C865,45 880,75 855,105 C830,135 848,165 855,190"
+          fill="none" stroke="#4FC3F7" stroke-width="18" stroke-linecap="round"/>
+  </g>
+
+  <!-- ── Border ── -->
+  <rect width="900" height="200" fill="none" stroke="#4FC3F7" stroke-width="1.5"
+        stroke-opacity="0.4" rx="14"/>
+</svg>

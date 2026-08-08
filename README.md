@@ -1,3 +1,11 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="ThetaFlow banner" width="900"/>
+</p>
+
+<p align="center">
+  <img src="assets/logo.svg" alt="ThetaFlow logo" width="120"/>
+</p>
+
 # ThetaFlow: A Richards equation simulator for vadose-zone dynamics.
 
 
