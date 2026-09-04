@@ -385,6 +385,7 @@ def one_substep(
     depth_m: Optional[np.ndarray] = None,
     vegetation: Optional[VegetationType] = None,
     theta_s_profile: Optional[np.ndarray] = None,
+    lateral_inflow_m_per_s: float = 0.0,
 ) -> tuple[SimulationState, dict[str, float], float]:
     theta = state.theta.copy()
     head_m = state.head_m.copy()
@@ -444,7 +445,18 @@ def one_substep(
     lateral_flux_layers = conductivity * np.sin(slope_angle_rad)
     lateral_sink_rate = lateral_flux_layers / max(sim.hillslope_flow_path_m, 1.0e-9)
 
-    theta_new = theta + dt_s * (vertical_dtheta_rate - lateral_sink_rate - aet_sink)
+    # Handle subsurface lateral inflow
+    lateral_source_rate = np.zeros(n)
+    if lateral_inflow_m_per_s > 0:
+        total_flux_out_vol = np.sum(lateral_flux_layers) * dz_m / max(sim.hillslope_flow_path_m, 1.0e-9)
+        if total_flux_out_vol > 1e-12:
+            # Distribute inflow proportionally to the same flux weights as the sink
+            lateral_source_rate = (lateral_inflow_m_per_s / total_flux_out_vol) * lateral_sink_rate
+        else:
+            # Fallback to uniform distribution across layers
+            lateral_source_rate[:] = lateral_inflow_m_per_s / (n * dz_m)
+
+    theta_new = theta + dt_s * (vertical_dtheta_rate - lateral_sink_rate + lateral_source_rate - aet_sink)
     theta_new = np.clip(theta_new, soil.theta_r + 1.0e-8, theta_s_eff - 1.0e-8)
     head_new = head_from_theta(theta_new, soil, theta_s_profile=theta_s_profile)
 
