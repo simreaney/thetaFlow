@@ -651,3 +651,140 @@ and re-test mass-balance diagnostics.
 - Add calibration workflow against observed profile moisture
 - Export additional plots (profile snapshots, cumulative infiltration, cumulative ET)
 - Add radiation-based PET (Penman-Monteith) when solar radiation is available from the API
+
+---
+
+## 2-D Spatial Module
+
+The optional `simulate_spatial.py` module extends each grid cell to a full 1-D
+Richards-equation soil column and routes water between cells using FD8
+multiple-flow-direction routing and Darcy–Weisbach overland-flow velocity.
+
+### New / modified files
+
+| File | Purpose |
+|---|---|
+| `simulate_spatial.py` | Main 2-D simulation driver (CLI entry point) |
+| `spatial_utils.py` | GeoTIFF I/O, FD8 routing, Darcy–Weisbach helpers |
+| `spatial_visualise.py` | MP4 animation and PNG snapshot generation |
+| `soil_types_example.json` | Example soil-type definitions (keyed by integer raster code) |
+| `spatial_config_example.json` | Example spatial configuration |
+| `vegetation_types.json` | Updated with `darcy_weisbach_f` per vegetation type |
+
+### Physics overview
+
+#### FD8 multiple-flow routing (Freeman 1991)
+
+Flow is distributed to all downslope neighbours proportional to:
+
+$$
+w_i = \frac{\max(\tan\beta_i,\, 0)^p}{\sum_j \max(\tan\beta_j,\, 0)^p}, \quad p = 1.1
+$$
+
+FD8 routing is applied to **both** surface runoff and subsurface lateral
+throughflow.  The per-cell slope angle is derived directly from the DEM.
+
+#### Darcy–Weisbach overland-flow velocity
+
+$$
+v = \sqrt{\frac{8\,g\,R\,S}{f}}
+$$
+
+where $R = h$ (flow depth, thin-sheet assumption), $S$ = DEM-derived slope,
+and $f$ is the Darcy–Weisbach friction factor (defaults from
+`vegetation_types.json`, overridable in `spatial_config_example.json`).
+
+Overland flow depth is advanced by an explicit continuity scheme:
+
+$$
+\frac{\partial h}{\partial t} = q_{runoff} + q_{in} - q_{out}
+$$
+
+### Installation
+
+```bash
+pip install rasterio scipy
+# ffmpeg required for MP4 export:
+# conda install ffmpeg   OR   apt-get install ffmpeg
+```
+
+### Quick-start (synthetic test)
+
+```bash
+python simulate_spatial.py --synthetic --synthetic-size 10 --output-dir outputs_2d/
+```
+
+This runs a 10 × 10 synthetic hillslope grid with example rainfall forcing and
+writes arrays, diagnostics CSV, and MP4 animations to `outputs_2d/`.
+
+### Usage with real data
+
+```bash
+python simulate_spatial.py \
+  --dem dem.tif \
+  --landcover landcover.tif \
+  --soilmap soilmap.tif \
+  --soil-types soil_types_example.json \
+  --veg-types vegetation_types.json \
+  --lc-map landcover_code_map.json \
+  --forcing forcing.csv \
+  --config spatial_config_example.json \
+  --output-dir outputs_2d/ \
+  --workers 8
+```
+
+Use `--forcing-dir path/` instead of `--forcing` for spatially distributed
+forcing (directory of `rainfall_NNNNN.tif` / `pet_NNNNN.tif` pairs).
+
+Use `--gpu` to enable CuPy GPU acceleration (requires `pip install cupy`).
+
+#### Land-cover code map (`--lc-map`)
+
+A JSON file mapping integer raster codes to vegetation names:
+
+```json
+{"1": "grass", "2": "broadleaf_woodland", "3": "urban", "4": "bare_soil"}
+```
+
+Keys must match codes in the land-cover GeoTIFF; values must match `name`
+fields in `vegetation_types.json`.
+
+#### Soil-type JSON (`--soil-types`)
+
+Each integer code maps to van Genuchten / Mualem parameters:
+
+```json
+{
+  "soil_types": {
+    "1": {"name": "sandy_loam", "theta_r": 0.045, "theta_s": 0.43,
+          "alpha_per_m": 7.5, "n": 1.89, "ks_m_per_s": 1.23e-5}
+  }
+}
+```
+
+### Outputs
+
+| File | Description |
+|---|---|
+| `theta_mean_NNNNN.npy` | Mean column θ per cell at step N |
+| `flow_depth_NNNNN.npy` | Overland flow depth (m) at step N |
+| `flow_vx_NNNNN.npy` | East component of flow vector |
+| `flow_vy_NNNNN.npy` | North component of flow vector |
+| `spatial_diagnostics.csv` | Domain-mean diagnostics per timestep |
+| `soil_moisture.mp4` | Soil moisture animation (hillshade underlay) |
+| `overland_flow.mp4` | Flow depth + quiver-arrow animation |
+| `combined.mp4` | Side-by-side combined animation |
+| `snapshots/snapshot_NNNNN.png` | Static PNG snapshots (optional) |
+
+### Spatial configuration (`spatial_config_example.json`)
+
+Key settings:
+
+| Key | Default | Description |
+|---|---|---|
+| `cell_size_m` | 50 | Grid cell size in metres |
+| `fd8_exponent` | 1.1 | FD8 slope exponent (Freeman 1991) |
+| `darcy_weisbach_f_overrides` | `{}` | Per-name friction factor overrides |
+| `output.animation_fps` | 4 | Frames per second for MP4 |
+| `output.quiver_stride` | 2 | Quiver arrow density (1 = every cell) |
+| `output.snapshot_interval_steps` | 1 | Steps between PNG snapshots (0 = off) |

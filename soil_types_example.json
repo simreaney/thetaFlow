@@ -1,0 +1,50 @@
+{
+  "_comment": "Soil type map: integer raster codes → soil hydraulic properties (van Genuchten / Mualem).",
+  "soil_types": {
+    "1": {
+      "name": "sandy_loam",
+      "theta_r": 0.045,
+      "theta_s": 0.43,
+      "alpha_per_m": 7.5,
+      "n": 1.89,
+      "ks_m_per_s": 1.23e-5,
+      "pore_connectivity": 0.5
+    },
+    "2": {
+      "name": "loam",
+      "theta_r": 0.078,
+      "theta_s": 0.43,
+      "alpha_per_m": 3.6,
+      "n": 1.56,
+      "ks_m_per_s": 2.89e-6,
+      "pore_connectivity": 0.5
+    },
+    "3": {
+      "name": "clay_loam",
+      "theta_r": 0.095,
+      "theta_s": 0.41,
+      "alpha_per_m": 1.9,
+      "n": 1.31,
+      "ks_m_per_s": 7.22e-7,
+      "pore_connectivity": 0.5
+    },
+    "4": {
+      "name": "silty_clay",
+      "theta_r": 0.089,
+      "theta_s": 0.43,
+      "alpha_per_m": 1.0,
+      "n": 1.23,
+      "ks_m_per_s": 1.94e-7,
+      "pore_connectivity": 0.5
+    },
+    "5": {
+      "name": "peat",
+      "theta_r": 0.010,
+      "theta_s": 0.80,
+      "alpha_per_m": 1.6,
+      "n": 1.25,
+      "ks_m_per_s": 4.00e-6,
+      "pore_connectivity": 0.5
+    }
+  }
+}
