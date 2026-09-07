@@ -65,7 +65,6 @@ from spatial_utils import (
     compute_fd8_weights,
     fd8_route_flux,
     update_flow_depth,
-    darcy_weisbach_velocity,
     build_friction_factor_grid,
     read_uniform_forcing,
 )
@@ -520,10 +519,9 @@ def run_spatial_simulation(
 
             lateral_out_grid = new_lateral_out_grid
 
-            # --- 3. Overland-flow routing (Darcy–Weisbach + FD8) ---
-            velocity = darcy_weisbach_velocity(flow_depth, slope_grid, f_grid)
+            # --- 3. Overland-flow routing (Darcy–Weisbach + FD8, CFL-substepped) ---
             flow_depth, vx, vy = update_flow_depth(
-                flow_depth, runoff_grid, velocity, fd8_weights, cell_size, dt_s
+                flow_depth, runoff_grid, slope_grid, f_grid, fd8_weights, cell_size, dt_s
             )
 
             # --- 4. Record diagnostics ---

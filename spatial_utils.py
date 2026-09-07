@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -467,47 +468,100 @@ def darcy_weisbach_velocity(
     return v
 
 
+def estimate_stable_overland_dt_seconds(
+    velocity: np.ndarray,
+    cell_size_m: float,
+    max_dt_s: float,
+    cfl_safety: float = 0.5,
+    min_dt_s: float = 0.1,
+) -> float:
+    """Estimate a CFL-stable timestep for the explicit FD8 overland-flow update.
+
+    The explicit continuity scheme in :func:`update_flow_depth` is only stable
+    when a cell cannot drain more water than it holds within one substep, i.e.
+    ``velocity * dt / cell_size_m <= 1``.  Returns ``max_dt_s`` unchanged when
+    there is no flow (velocity is zero everywhere).
+    """
+    v_max = float(np.max(velocity)) if velocity.size else 0.0
+    if v_max <= 0.0:
+        return max_dt_s
+    dt_cfl = cfl_safety * cell_size_m / v_max
+    return float(np.clip(dt_cfl, min_dt_s, max_dt_s))
+
+
 def update_flow_depth(
     flow_depth_m: np.ndarray,
     runoff_flux: np.ndarray,
-    velocity: np.ndarray,
+    slope_grid: np.ndarray,
+    f_grid: np.ndarray,
     fd8_weights: np.ndarray,
     cell_size_m: float,
     dt_s: float,
+    cfl_safety: float = 0.5,
+    min_substep_seconds: float = 0.1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Advance overland flow depth by one timestep using a simple explicit
-    continuity scheme with FD8 redistribution.
+    """Advance overland flow depth over ``dt_s`` using a simple explicit
+    continuity scheme with FD8 redistribution, subdivided into CFL-stable
+    substeps.
 
-    Outflow from each cell = v * h * cell_width * dt
+    Outflow from each cell = v * h / cell_width (per substep).
     Inflow = FD8-weighted contributions from upslope cells.
+
+    Without substepping, the explicit update is unconditionally unstable for
+    the timesteps typically used here (e.g. hourly forcing over 50 m cells):
+    depth blows up over a handful of steps and then collapses to exactly zero
+    once the resulting negative overshoot is clamped. Velocity is recomputed
+    every substep since it depends on the evolving depth.
 
     Parameters
     ----------
     flow_depth_m : current flow depth (m)
     runoff_flux : surface runoff produced this timestep (m/s)
-    velocity : Darcy–Weisbach velocity (m/s)
+    slope_grid : DEM-derived slope magnitude (rise/run)
+    f_grid : Darcy–Weisbach friction factor grid
     fd8_weights : (nrows, ncols, 8)
     cell_size_m : grid spacing (m)
-    dt_s : timestep (s)
+    dt_s : total timestep to advance (s)
 
     Returns
     -------
-    new_depth, vx, vy : updated depth array and flow vectors
+    new_depth, vx, vy : updated depth array and time-averaged flow vectors
     """
     h = np.maximum(flow_depth_m, 0.0)
+    vx_accum = np.zeros_like(h)
+    vy_accum = np.zeros_like(h)
 
-    # Volume of water leaving each cell per second per unit area (m/s)
-    outflow_rate = velocity * h / cell_size_m  # m/s normalised by cell width
+    remaining_s = dt_s
+    n_iter = 0
+    while remaining_s > 1.0e-9:
+        n_iter += 1
+        if n_iter > 100_000:
+            warnings.warn("update_flow_depth: exceeded max substeps, truncating.")
+            break
 
-    # Inflow from upslope cells
-    inflow_rate = fd8_route_flux(outflow_rate, fd8_weights)
+        velocity = darcy_weisbach_velocity(h, slope_grid, f_grid)
+        sub_dt = estimate_stable_overland_dt_seconds(
+            velocity, cell_size_m, remaining_s, cfl_safety, min_substep_seconds
+        )
 
-    # Continuity: dh/dt = runoff_flux + inflow - outflow
-    h_new = h + dt_s * (runoff_flux + inflow_rate - outflow_rate)
-    h_new = np.maximum(h_new, 0.0)
+        # Volume of water leaving each cell per second per unit area (m/s)
+        outflow_rate = velocity * h / cell_size_m  # m/s normalised by cell width
 
-    vx, vy = compute_flow_vectors(outflow_rate, fd8_weights, cell_size_m)
-    return h_new, vx, vy
+        # Inflow from upslope cells
+        inflow_rate = fd8_route_flux(outflow_rate, fd8_weights)
+
+        # Continuity: dh/dt = runoff_flux + inflow - outflow
+        h = h + sub_dt * (runoff_flux + inflow_rate - outflow_rate)
+        h = np.maximum(h, 0.0)
+
+        vx, vy = compute_flow_vectors(outflow_rate, fd8_weights, cell_size_m)
+        vx_accum += vx * sub_dt
+        vy_accum += vy * sub_dt
+        remaining_s -= sub_dt
+
+    vx_accum /= dt_s
+    vy_accum /= dt_s
+    return h, vx_accum, vy_accum
 
 
 # ---------------------------------------------------------------------------
