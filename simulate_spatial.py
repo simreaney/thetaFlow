@@ -66,7 +66,6 @@ from spatial_utils import (
     compute_fd8_weights,
     fd8_route_flux,
     update_flow_depth,
-    darcy_weisbach_velocity,
     build_friction_factor_grid,
     read_uniform_forcing,
 )
@@ -200,9 +199,6 @@ def _run_cell(
     n_iter = 0
     last_diag: Optional[dict] = None
 
-    # Adjust rainfall for any lateral inflow received (add as equivalent rainfall rate)
-    eff_rainfall = rainfall_mm_h + lateral_inflow_m_per_s * 1000.0 * 3600.0
-
     while remaining_s > 1.0e-9:
         n_iter += 1
         if n_iter > 500_000:
@@ -212,7 +208,7 @@ def _run_cell(
         candidate_max_dt = min(sim.max_substep_seconds, remaining_s)
         stable_dt = estimate_stable_dt_seconds(
             state, soil, sim, cumulative_infiltration_m, col_dz,
-            eff_rainfall, pet_mm_h,
+            rainfall_mm_h, pet_mm_h,
             sim.min_theta_buffer, sim.max_dtheta_per_substep,
             candidate_max_dt, sim.min_substep_seconds,
             depth_m=depth_m, vegetation=veg,
@@ -221,9 +217,10 @@ def _run_cell(
 
         state, diag, cumulative_infiltration_m = one_substep(
             state, soil, sim, cumulative_infiltration_m, col_dz, dt_s,
-            eff_rainfall, pet_mm_h,
+            rainfall_mm_h, pet_mm_h,
             sim.min_theta_buffer,
             depth_m=depth_m, vegetation=veg,
+            lateral_inflow_m_per_s=lateral_inflow_m_per_s,
         )
         last_diag = diag
         remaining_s -= dt_s
@@ -313,6 +310,10 @@ def run_spatial_simulation(
     if use_gpu and not _CUPY_AVAILABLE:
         print("Warning: --gpu specified but CuPy not found. Falling back to CPU.")
         use_gpu = False
+    elif use_gpu:
+        print("Warning: --gpu is enabled. This path uses a single representative soil "
+              "and ignores per-cell vegetation, which materially changes model "
+              "semantics compared to the CPU path.")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -335,9 +336,18 @@ def run_spatial_simulation(
     # -----------------------------------------------------------------------
     # Derived terrain fields
     # -----------------------------------------------------------------------
-    slope_grid = compute_slope_grid(dem, cell_size)
+    # Handle DEM nodata (NaNs) before computing derivatives
+    dem_clean = np.nan_to_num(dem, nan=np.nanmean(dem) if not np.all(np.isnan(dem)) else 0.0)
+    slope_grid = compute_slope_grid(dem_clean, cell_size)
     slope_grid = np.maximum(slope_grid, 1.0e-4)  # avoid perfectly flat cells
-    fd8_weights = compute_fd8_weights(dem, cell_size, exponent=cfg.fd8_exponent)
+    fd8_weights = compute_fd8_weights(dem_clean, cell_size, exponent=cfg.fd8_exponent)
+
+    # Zero out routing weights for nodata cells to ensure they don't participate
+    nodata_mask = np.isnan(dem)
+    fd8_weights[nodata_mask] = 0.0
+    # Normalise again if we zeroed any weights
+    total = fd8_weights.sum(axis=2, keepdims=True)
+    fd8_weights /= np.where(total <= 0.0, 1.0, total)
 
     # -----------------------------------------------------------------------
     # Load soil properties per cell
@@ -356,11 +366,6 @@ def run_spatial_simulation(
             soil_grid[r][c] for r in range(nrows) for c in range(ncols)
         ]
     else:
-        # Default: use a loam
-        default_soil = SoilProperties(
-            theta_r=0.078, theta_s=0.43, alpha_per_m=3.6, n=1.56,
-            ks_m_per_s=2.89e-6, pore_connectivity=0.5,
-        )
         soil_list = [default_soil] * ncells
 
     # Cells with no mapped soil fall back to the first available soil
@@ -595,10 +600,9 @@ def run_spatial_simulation(
             new_lateral_out_grid[~active_mask] = 0.0
             lateral_out_grid = new_lateral_out_grid
 
-            # --- 3. Overland-flow routing (Darcy–Weisbach + FD8) ---
-            velocity = darcy_weisbach_velocity(flow_depth, slope_grid, f_grid)
+            # --- 3. Overland-flow routing (Darcy–Weisbach + FD8, CFL-substepped) ---
             flow_depth, vx, vy = update_flow_depth(
-                flow_depth, runoff_grid, velocity, fd8_weights, cell_size, dt_s
+                flow_depth, runoff_grid, slope_grid, f_grid, fd8_weights, cell_size, dt_s
             )
             # Water routed onto inactive cells leaves the domain
             flow_depth[~active_mask] = 0.0
@@ -714,9 +718,13 @@ def _run_cells_gpu(
     This function updates *runoff_grid* and *lateral_out_grid* in-place and
     writes updated theta/head back to *theta_grid* / *head_grid*.
 
-    Note: this is a simplified vectorised approximation that skips adaptive
-    sub-stepping for performance; a single sub-step of fixed dt_s/10 is used.
-    For higher accuracy use the CPU path with adaptive sub-stepping.
+    Cautions:
+    - This is a simplified vectorised approximation that skips adaptive
+      sub-stepping for performance; it uses a number of sub-steps based on
+      the maximum allowed substep of the first configuration.
+    - The GPU path assumes a single representative soil (`soil0`) and does not
+      incorporate per-cell vegetation, materially changing model semantics
+      compared to the CPU path.
     """
     import cupy as cp
     from simulate_soil_column import (
