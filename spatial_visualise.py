@@ -270,6 +270,7 @@ def _save_snapshot(
     theta_vmax: float,
     stride: int,
 ) -> None:
+    stride = max(1, stride)
     nrows, ncols = dem.shape
     extent = [0, ncols * cell_size_m, nrows * cell_size_m, 0]
 
