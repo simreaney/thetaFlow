@@ -747,7 +747,9 @@ A JSON file mapping integer raster codes to vegetation names:
 ```
 
 Keys must match codes in the land-cover GeoTIFF; values must match `name`
-fields in `vegetation_types.json`.
+fields in `vegetation_types.json`. Keys starting with `_` (e.g. `"_comment"`)
+are ignored. Ready-made maps for the UKCEH Land Cover Map, ESA WorldCover and
+CORINE are in `landcover_maps/`.
 
 #### Soil-type JSON (`--soil-types`)
 
@@ -788,3 +790,33 @@ Key settings:
 | `output.animation_fps` | 4 | Frames per second for MP4 |
 | `output.quiver_stride` | 2 | Quiver arrow density (1 = every cell) |
 | `output.snapshot_interval_steps` | 1 | Steps between PNG snapshots (0 = off) |
+
+## QGIS Plugin
+
+`qgis_plugin/thetaflow` is a QGIS Processing plugin that runs the 2-D model on
+a DEM from inside QGIS. It adds these options to the command-line workflow:
+
+- soil properties that vary with depth, from horizon rasters (`ks_0-5cm`,
+  `theta_s_15-30cm`, …) or from regression equations (exponential, linear,
+  power or a free-form expression, with constant or raster coefficients);
+- land-cover presets for UKCEH LCM, ESA WorldCover and CORINE, with vegetation
+  parameters editable in the dialog;
+- weather from a CSV file, a QGIS table, a series typed into the dialog, or
+  Open-Meteo recent past + forecast data (at the DEM centroid, or on a sampled
+  grid interpolated to cells).
+
+Build the installable ZIP with `python scripts/build_qgis_plugin.py`. See
+[`qgis_plugin/README.md`](qgis_plugin/README.md) for details.
+
+The supporting model modules are:
+
+| File | Purpose |
+|---|---|
+| `soil_depth.py` | Depth profiles from horizon grids or regressions (safe expression evaluator) |
+| `weather_grid.py` | Open-Meteo centroid and sampled-grid forcing (IDW interpolation) |
+| `landcover_maps/` | Land-cover code → vegetation presets |
+
+`SoilProperties` fields may now be per-layer arrays, and
+`run_spatial_simulation` accepts per-cell soil profiles, an active-cell mask,
+a default vegetation type and a progress/cancel callback. It also returns the
+result grids. Existing CLI runs give the same results as before.

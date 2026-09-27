@@ -1,0 +1,17 @@
+[general]
+name=ThetaFlow
+qgisMinimumVersion=3.22
+description=Richards-equation soil moisture and overland flow simulation driven by a DEM.
+about=Runs the thetaFlow model over a DEM: each cell is a 1-D Richards-equation soil column (van Genuchten–Mualem) linked by FD8 routing of subsurface throughflow and Darcy–Weisbach overland flow. Soil properties can vary with depth, from horizon rasters or regression equations. Land cover sets rooting depth, PET scaling and surface roughness. Weather comes from a CSV file, a table, a series typed into the dialog, or Open-Meteo historical and forecast data (one point or an interpolated grid). Requires numpy and pandas, which QGIS installers normally include.
+version=0.1.0
+author=Sim Reaney
+email=sim.reaney@durham.ac.uk
+repository=https://github.com/simreaney/thetaFlow
+tracker=https://github.com/simreaney/thetaFlow/issues
+homepage=https://github.com/simreaney/thetaFlow
+category=Analysis
+icon=icon.svg
+tags=hydrology,soil moisture,richards equation,runoff,dem,open-meteo,processing
+experimental=True
+deprecated=False
+hasProcessingProvider=yes

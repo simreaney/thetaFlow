@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -102,6 +101,12 @@ VEGETATION_LIBRARY: dict[str, VegetationType] = {
 
 @dataclass
 class SoilProperties:
+    """Van Genuchten–Mualem soil hydraulic properties.
+
+    Each field may be a scalar (uniform with depth) or a 1-D array with one
+    value per column layer (properties varying with depth).
+    """
+
     theta_r: float
     theta_s: float
     alpha_per_m: float
@@ -112,6 +117,11 @@ class SoilProperties:
     @property
     def m(self) -> float:
         return 1.0 - 1.0 / self.n
+
+
+def _surface(value):
+    """Return the top-layer value of a scalar or per-layer soil property."""
+    return float(np.ravel(value)[0])
 
 
 @dataclass
@@ -396,7 +406,7 @@ def one_substep(
     n = theta.size
 
     # Effective theta_s per layer (scalar fallback when no profile provided)
-    theta_s_eff = theta_s_profile if theta_s_profile is not None else np.full(n, soil.theta_s)
+    theta_s_eff = theta_s_profile if theta_s_profile is not None else np.broadcast_to(soil.theta_s, (n,))
 
     if vegetation is not None and vegetation.rooting_depth_m > 0.0 and depth_m is not None:
         # Root-zone uptake: distributed across layers; no surface-only ET deduction
@@ -408,7 +418,7 @@ def one_substep(
         surface_et_flux = 0.0
     else:
         # Legacy surface-layer evaporation
-        available_evap = max((theta[0] - (soil.theta_r + min_theta_buffer)) * dz_m / dt_s, 0.0)
+        available_evap = max((theta[0] - (_surface(soil.theta_r) + min_theta_buffer)) * dz_m / dt_s, 0.0)
         aet_flux = min(pet_flux, available_evap)
         surface_et_flux = aet_flux
         aet_sink = np.zeros(n)
@@ -416,10 +426,11 @@ def one_substep(
     conductivity = hydraulic_conductivity(head_m, soil)
     theta_deficit = max(float(theta_s_eff[0]) - theta[0], 1.0e-6)
     cumulative_for_capacity = max(cumulative_infiltration_m, 1.0e-6)
-    infiltration_capacity_flux = soil.ks_m_per_s * (
+    ks_surface = _surface(soil.ks_m_per_s)
+    infiltration_capacity_flux = ks_surface * (
         1.0 + (sim.green_ampt_wetting_front_suction_m * theta_deficit) / cumulative_for_capacity
     )
-    infiltration_capacity_flux = max(infiltration_capacity_flux, soil.ks_m_per_s)
+    infiltration_capacity_flux = max(infiltration_capacity_flux, ks_surface)
     infiltration_flux = min(rain_flux, infiltration_capacity_flux)
     runoff_flux = max(rain_flux - infiltration_flux, 0.0)
     net_downward_flux = infiltration_flux - surface_et_flux
@@ -500,7 +511,7 @@ def estimate_stable_dt_seconds(
     rain_flux = rainfall_mm_h / 1000.0 / 3600.0
     pet_flux = max(pet_mm_h, 0.0) / 1000.0 / 3600.0
 
-    theta_s_eff = theta_s_profile if theta_s_profile is not None else np.full(theta.size, soil.theta_s)
+    theta_s_eff = theta_s_profile if theta_s_profile is not None else np.broadcast_to(soil.theta_s, (theta.size,))
 
     if vegetation is not None and vegetation.rooting_depth_m > 0.0 and depth_m is not None:
         aet_sink = _root_uptake_sink(
@@ -509,7 +520,7 @@ def estimate_stable_dt_seconds(
         surface_et_flux = 0.0
     else:
         available_evap_rate = max(
-            (theta[0] - (soil.theta_r + min_theta_buffer)) * dz_m / max_dt_seconds, 0.0
+            (theta[0] - (_surface(soil.theta_r) + min_theta_buffer)) * dz_m / max_dt_seconds, 0.0
         )
         aet_flux_surface = min(pet_flux, available_evap_rate)
         surface_et_flux = aet_flux_surface
@@ -518,10 +529,11 @@ def estimate_stable_dt_seconds(
     conductivity = hydraulic_conductivity(head_m, soil)
     theta_deficit = max(float(theta_s_eff[0]) - theta[0], 1.0e-6)
     cumulative_for_capacity = max(cumulative_infiltration_m, 1.0e-6)
-    infiltration_capacity_flux = soil.ks_m_per_s * (
+    ks_surface = _surface(soil.ks_m_per_s)
+    infiltration_capacity_flux = ks_surface * (
         1.0 + (sim.green_ampt_wetting_front_suction_m * theta_deficit) / cumulative_for_capacity
     )
-    infiltration_capacity_flux = max(infiltration_capacity_flux, soil.ks_m_per_s)
+    infiltration_capacity_flux = max(infiltration_capacity_flux, ks_surface)
     infiltration_flux = min(rain_flux, infiltration_capacity_flux)
     net_downward_flux = infiltration_flux - surface_et_flux
 
@@ -659,7 +671,7 @@ def run_simulation(
         timestamp = row["timestamp"] if "timestamp" in forcing.columns else pd.NaT
 
         for node in range(column.nz):
-            node_theta_s = float(theta_s_profile[node]) if theta_s_profile is not None else soil.theta_s
+            node_theta_s = float(theta_s_profile[node]) if theta_s_profile is not None else float(np.broadcast_to(soil.theta_s, (column.nz,))[node])
             profiles.append(
                 {
                     "step": i,
@@ -716,6 +728,8 @@ def plot_moisture_heatmap(
 ) -> None:
     pivot = profile_df.pivot(index="depth_m", columns="time_hours", values="theta").sort_index(ascending=True)
     mean_theta = profile_df.groupby("time_hours", as_index=False)["theta"].mean()
+
+    import matplotlib.pyplot as plt
 
     fig, (ax_rain, ax_runoff, ax_lateral, ax_mean, ax_moisture) = plt.subplots(
         nrows=5,
@@ -801,6 +815,7 @@ def fetch_openmeteo_forcing(
     lat: float,
     lon: float,
     historical_days: int = 1,
+    forecast_days: Optional[int] = None,
 ) -> pd.DataFrame:
     """Fetch hourly observed + forecast forcing from the Open-Meteo API (no API key required).
 
@@ -825,6 +840,9 @@ def fetch_openmeteo_forcing(
     historical_days:
         Number of past days to fetch from the historical archive (1–100).
         Defaults to 1 (yesterday only).
+    forecast_days:
+        Number of forecast days to request (0–16). ``None`` uses the API
+        default (7 days); ``0`` skips the forecast request.
     """
     try:
         import requests
@@ -853,9 +871,13 @@ def fetch_openmeteo_forcing(
         "hourly": "temperature_2m,precipitation",
         "timezone": "UTC",
     }
-    resp = requests.get(FORECAST_URL, params=params_forecast, timeout=30)
-    resp.raise_for_status()
-    fc = resp.json()
+    fc: dict = {}
+    if forecast_days is not None:
+        params_forecast["forecast_days"] = max(0, min(int(forecast_days), 16))
+    if forecast_days is None or forecast_days > 0:
+        resp = requests.get(FORECAST_URL, params=params_forecast, timeout=30)
+        resp.raise_for_status()
+        fc = resp.json()
 
     hourly_fc = fc.get("hourly", {})
     times_fc = hourly_fc.get("time", [])
@@ -926,6 +948,83 @@ def fetch_openmeteo_forcing(
         f"({df['timestamp'].min()} – {df['timestamp'].max()})"
     )
     return df
+
+
+def fetch_openmeteo_forcing_multi(
+    lats: list[float],
+    lons: list[float],
+    past_days: int = 7,
+    forecast_days: int = 7,
+) -> list[pd.DataFrame]:
+    """Fetch recent observed + forecast hourly forcing for several points at once.
+
+    Uses a single Open-Meteo Forecast API request with comma-separated
+    coordinates.  ``past_days`` (0–92) returns the most recent days of
+    model-analysed weather, so no separate archive request is needed.
+
+    Returns one DataFrame per point (same order as the inputs), each with
+    ``timestamp``, ``rainfall_mm_h`` and ``pet_mm_h`` columns compatible with
+    :func:`read_forcing`.  PET is estimated with Hargreaves–Samani as in
+    :func:`fetch_openmeteo_forcing`.
+    """
+    try:
+        import requests
+    except ImportError as exc:
+        raise ImportError(
+            "The 'requests' package is required for Open-Meteo integration. "
+            "Install it with: pip install requests"
+        ) from exc
+
+    import math
+
+    if len(lats) != len(lons) or not lats:
+        raise ValueError("lats and lons must be non-empty and the same length.")
+
+    params = {
+        "latitude": ",".join(f"{v:.5f}" for v in lats),
+        "longitude": ",".join(f"{v:.5f}" for v in lons),
+        "hourly": "temperature_2m,precipitation",
+        "timezone": "UTC",
+        "past_days": max(0, min(int(past_days), 92)),
+        "forecast_days": max(0, min(int(forecast_days), 16)),
+    }
+    resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=60)
+    resp.raise_for_status()
+    payload = resp.json()
+    locations = payload if isinstance(payload, list) else [payload]
+    if len(locations) != len(lats):
+        raise ValueError(
+            f"Open-Meteo returned {len(locations)} locations for {len(lats)} requested points."
+        )
+
+    frames: list[pd.DataFrame] = []
+    for lat, loc in zip(lats, locations):
+        hourly = loc.get("hourly", {})
+        df = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(hourly.get("time", []), utc=True),
+                "rainfall_mm_h": pd.to_numeric(
+                    pd.Series(hourly.get("precipitation", []), dtype="float64")
+                ).fillna(0.0).to_numpy(),
+                "_temp_c": pd.to_numeric(
+                    pd.Series(hourly.get("temperature_2m", []), dtype="float64")
+                ).fillna(0.0).to_numpy(),
+            }
+        )
+        if df.empty:
+            raise ValueError("Open-Meteo returned no usable data.")
+        lat_rad = math.radians(lat)
+        df["pet_mm_h"] = [
+            _hargreaves_pet_mm_h(ts, float(t), lat_rad)
+            for ts, t in zip(df["timestamp"], df["_temp_c"])
+        ]
+        frames.append(df.drop(columns=["_temp_c"]))
+
+    print(
+        f"Fetched {len(frames[0])} hourly records for {len(frames)} point(s) from Open-Meteo "
+        f"({frames[0]['timestamp'].min()} – {frames[0]['timestamp'].max()})"
+    )
+    return frames
 
 
 def fetch_openmeteo_ensemble_forcing(

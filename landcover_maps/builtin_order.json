@@ -1,0 +1,14 @@
+{
+  "_comment": "Codes 1-11 in the order of the built-in vegetation library (the simulate_spatial.py default). Keys are raster codes, values are vegetation_types.json names.",
+  "1": "grass",
+  "2": "broadleaf_woodland",
+  "3": "coniferous_woodland",
+  "4": "moorland",
+  "5": "wheat",
+  "6": "maize",
+  "7": "oilseed_rape",
+  "8": "sugar_beet",
+  "9": "potato",
+  "10": "bare_soil",
+  "11": "urban"
+}

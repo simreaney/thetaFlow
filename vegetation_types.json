@@ -76,6 +76,20 @@
       "pet_scale": 0.2,
       "darcy_weisbach_f": 0.1,
       "description": "Urban or suburban mix with mostly impervious surfaces."
+    },
+    {
+      "name": "shrubland",
+      "rooting_depth_m": 0.80,
+      "pet_scale": 0.9,
+      "darcy_weisbach_f": 1.2,
+      "description": "Scrub, heath-scrub and transitional woodland-shrub."
+    },
+    {
+      "name": "open_water",
+      "rooting_depth_m": 0.0,
+      "pet_scale": 1.0,
+      "darcy_weisbach_f": 0.05,
+      "description": "Lakes, rivers and sea (placeholder: the soil column is not a water body)."
     }
   ]
 }

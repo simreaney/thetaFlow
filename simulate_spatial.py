@@ -33,10 +33,11 @@ import sys
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -252,7 +253,7 @@ def run_spatial_simulation(
     dem: np.ndarray,
     landcover_codes: Optional[np.ndarray],
     soil_codes: Optional[np.ndarray],
-    veg_json_path: Path,
+    veg_json_path: "Path | dict",
     soil_types_json_path: Optional[Path],
     code_to_veg_name: dict[int, str],
     forcing_uniform: Optional[pd.DataFrame],
@@ -261,7 +262,12 @@ def run_spatial_simulation(
     output_dir: Path,
     n_workers: int = 1,
     use_gpu: bool = False,
-) -> None:
+    soil_list_override: Optional[list[SoilProperties]] = None,
+    default_vegetation: Optional[str] = None,
+    active_mask: Optional[np.ndarray] = None,
+    progress_callback: Optional[Callable[[int, int], bool]] = None,
+    render_animations: bool = True,
+) -> dict[str, object]:
     """Run the 2-D spatial simulation.
 
     Parameters
@@ -269,15 +275,37 @@ def run_spatial_simulation(
     dem : (nrows, ncols) elevation array in metres
     landcover_codes : (nrows, ncols) integer land-cover codes (or None)
     soil_codes : (nrows, ncols) integer soil-type codes (or None)
-    veg_json_path : path to vegetation_types.json
+    veg_json_path : path to vegetation_types.json, or an equivalent dict
     soil_types_json_path : path to soil_types.json (or None → uniform soil)
     code_to_veg_name : {integer code → vegetation name string}
     forcing_uniform : uniform DataFrame (None if using gridded forcing)
     forcing_gridded : list of per-step dicts (None if using uniform forcing)
     cfg : SpatialConfig
     output_dir : directory for outputs
-    n_workers : number of ProcessPoolExecutor workers
+    n_workers : number of ProcessPoolExecutor workers; ``<= 1`` runs every
+        cell in the calling process (required inside QGIS)
     use_gpu : attempt to use CuPy GPU arrays (falls back to CPU)
+    soil_list_override : optional per-cell soil properties (row-major, one
+        entry per cell).  Fields may be per-layer arrays for soil properties
+        that vary with depth.  Replaces the soil map / default loam.
+    default_vegetation : vegetation name used for cells whose land-cover code
+        is unmapped or nodata, and for every cell when no land-cover grid is
+        given (``None`` keeps the previous behaviour: grass without a land-cover
+        grid, no vegetation for unmapped codes)
+    active_mask : optional (nrows, ncols) bool array; cells outside the mask
+        (e.g. DEM NoData) are not simulated and any overland water reaching
+        them leaves the domain
+    progress_callback : called as ``progress_callback(step, n_steps)`` after
+        each forcing step; returning ``False`` cancels the run
+    render_animations : render MP4 animations / snapshots from saved arrays
+
+    Returns
+    -------
+    dict with keys ``theta_mean_final`` (nrows, ncols), ``theta_layers_final``
+    (nrows, ncols, nz), ``theta_mean_steps`` (n_steps, nrows, ncols),
+    ``max_flow_depth_m``, ``cumulative_runoff_mm``, ``cumulative_lateral_out_mm``
+    (nrows, ncols), ``diagnostics`` (DataFrame), ``timestamps`` (list),
+    ``depth_m`` (nz,), ``n_steps`` and ``cancelled``.
     """
     if use_gpu and not _CUPY_AVAILABLE:
         print("Warning: --gpu specified but CuPy not found. Falling back to CPU.")
@@ -294,7 +322,16 @@ def run_spatial_simulation(
     ncells = nrows * ncols
     cell_size = cfg.cell_size_m
 
-    print(f"Grid: {nrows} × {ncols} = {ncells} cells  |  cell size: {cell_size} m")
+    if active_mask is None:
+        active_mask = np.ones((nrows, ncols), dtype=bool)
+    active_mask = np.asarray(active_mask, dtype=bool)
+    active_flat = active_mask.ravel()
+    active_idx = [int(i) for i in np.flatnonzero(active_flat)]
+
+    print(
+        f"Grid: {nrows} × {ncols} = {ncells} cells ({len(active_idx)} active)  |  "
+        f"cell size: {cell_size} m"
+    )
 
     # -----------------------------------------------------------------------
     # Derived terrain fields
@@ -315,34 +352,53 @@ def run_spatial_simulation(
     # -----------------------------------------------------------------------
     # Load soil properties per cell
     # -----------------------------------------------------------------------
-    # Define a non-None default soil (Loam)
-    default_soil = SoilProperties(
-        theta_r=0.078, theta_s=0.43, alpha_per_m=3.6, n=1.56,
-        ks_m_per_s=2.89e-6, pore_connectivity=0.5,
-    )
-
-    if soil_types_json_path is not None and soil_codes is not None:
+    if soil_list_override is not None:
+        if len(soil_list_override) != ncells:
+            raise ValueError(
+                f"soil_list_override has {len(soil_list_override)} entries; expected {ncells}."
+            )
+        soil_list: list[Optional[SoilProperties]] = list(soil_list_override)
+    elif soil_types_json_path is not None and soil_codes is not None:
         from spatial_utils import load_soil_map
         soil_grid = load_soil_map(soil_codes, soil_types_json_path)
-        # Flatten and normalize to ensure no None values
-        soil_list: list[SoilProperties] = [
-            (soil_grid[r][c] if soil_grid[r][c] is not None else default_soil)
-            for r in range(nrows) for c in range(ncols)
+        # Flatten to 1-D list
+        soil_list = [
+            soil_grid[r][c] for r in range(nrows) for c in range(ncols)
         ]
     else:
         soil_list = [default_soil] * ncells
+
+    # Cells with no mapped soil fall back to the first available soil
+    fallback_soil = next((sp for sp in soil_list if sp is not None), None)
+    if fallback_soil is None:
+        raise ValueError("No valid soil properties for any cell.")
+
+    depth_varying = any(
+        np.ndim(getattr(sp, name)) > 0
+        for sp in soil_list if sp is not None
+        for name in ("theta_r", "theta_s", "alpha_per_m", "n", "ks_m_per_s", "pore_connectivity")
+    )
+    if use_gpu and depth_varying:
+        print("Warning: GPU path does not support depth-varying soil properties. Using CPU.")
+        use_gpu = False
 
     # -----------------------------------------------------------------------
     # Load vegetation per cell
     # -----------------------------------------------------------------------
     if landcover_codes is not None:
         from spatial_utils import load_vegetation_map
-        veg_grid = load_vegetation_map(landcover_codes, veg_json_path, code_to_veg_name)
+        veg_grid = load_vegetation_map(
+            landcover_codes, veg_json_path, code_to_veg_name, default_name=default_vegetation
+        )
         veg_list: list[Optional[VegetationType]] = [
             veg_grid[r][c] for r in range(nrows) for c in range(ncols)
         ]
     else:
-        default_veg = VEGETATION_LIBRARY.get("grass")
+        if default_vegetation is not None:
+            from spatial_utils import load_vegetation_types
+            default_veg = load_vegetation_types(veg_json_path).get(default_vegetation)
+        else:
+            default_veg = VEGETATION_LIBRARY.get("grass")
         veg_list = [default_veg] * ncells
 
     # -----------------------------------------------------------------------
@@ -352,6 +408,13 @@ def run_spatial_simulation(
         f_grid = build_friction_factor_grid(
             landcover_codes, veg_json_path, code_to_veg_name,
             overrides=cfg.darcy_weisbach_f_overrides if cfg.darcy_weisbach_f_overrides else None,
+            default_name=default_vegetation,
+        )
+    elif default_vegetation is not None:
+        f_grid = build_friction_factor_grid(
+            np.zeros((nrows, ncols), dtype=np.int32), veg_json_path, {},
+            overrides=cfg.darcy_weisbach_f_overrides if cfg.darcy_weisbach_f_overrides else None,
+            default_name=default_vegetation,
         )
     else:
         f_grid = np.full((nrows, ncols), 0.5)
@@ -367,7 +430,7 @@ def run_spatial_simulation(
     theta_grid = np.zeros((ncells, col.nz), dtype=float)
     head_grid = np.zeros((ncells, col.nz), dtype=float)
     for idx in range(ncells):
-        soil = soil_list[idx] or soil_list[0]
+        soil = soil_list[idx] or fallback_soil
         h0 = np.full(col.nz, base_sim.initial_head_m)
         t0 = theta_from_head(h0, soil)
         theta_grid[idx] = t0
@@ -399,6 +462,11 @@ def run_spatial_simulation(
     # -----------------------------------------------------------------------
     # Forcing iterator
     # -----------------------------------------------------------------------
+    if forcing_uniform is not None:
+        n_steps_total = len(forcing_uniform)
+    else:
+        n_steps_total = len(forcing_gridded)  # type: ignore[arg-type]
+
     def _forcing_steps():
         if forcing_uniform is not None:
             for _, row in forcing_uniform.iterrows():
@@ -406,6 +474,7 @@ def run_spatial_simulation(
                     float(row["dt_seconds"]),
                     np.full((nrows, ncols), float(row["rainfall_mm_h"])),
                     np.full((nrows, ncols), float(row["pet_mm_h"])),
+                    row.get("timestamp", pd.NaT),
                 )
         else:
             for rec in forcing_gridded:  # type: ignore[union-attr]
@@ -413,6 +482,7 @@ def run_spatial_simulation(
                     float(rec["dt_seconds"]),
                     rec["rainfall_grid"].reshape(nrows, ncols),
                     rec["pet_grid"].reshape(nrows, ncols),
+                    rec.get("timestamp", pd.NaT),
                 )
 
     # -----------------------------------------------------------------------
@@ -453,22 +523,34 @@ def run_spatial_simulation(
     diag_rows: list[dict] = []
     step = 0
     t_elapsed = 0.0
+    cancelled = False
 
     # Per-cell cumulative infiltration carried across timesteps (Green-Ampt)
     cum_infilt_grid = np.full(ncells, 1.0e-6, dtype=float)
     lateral_out_grid = np.zeros((nrows, ncols))
 
+    # Accumulated result grids
+    theta_mean_steps: list[np.ndarray] = []
+    timestamps: list[object] = []
+    max_flow_depth = np.zeros((nrows, ncols))
+    cum_runoff_m = np.zeros((nrows, ncols))
+    cum_lateral_m = np.zeros((nrows, ncols))
+
     print("Starting simulation…")
     t_wall_start = time.monotonic()
 
-    with ProcessPoolExecutor(max_workers=max(1, n_workers)) as pool:
-        for dt_s, rain_grid, pet_grid in _forcing_steps():
+    with ExitStack() as stack:
+        pool = (
+            stack.enter_context(ProcessPoolExecutor(max_workers=n_workers))
+            if n_workers > 1 and not use_gpu else None
+        )
+        for dt_s, rain_grid, pet_grid, timestamp in _forcing_steps():
             step_start = time.monotonic()
 
             # --- 1. Subsurface lateral throughflow redistribution from previous step ---
             subsurface_inflow = fd8_route_flux(lateral_out_grid, fd8_weights)
 
-            # --- 2. Run soil columns in parallel ---
+            # --- 2. Run soil columns (in-process, parallel or GPU) ---
             runoff_grid = np.zeros((nrows, ncols))
             new_lateral_out_grid = np.zeros((nrows, ncols))
 
@@ -480,34 +562,31 @@ def run_spatial_simulation(
                     dt_s, col, runoff_grid, new_lateral_out_grid,
                 )
             else:
-                # CPU multiprocessing path
-                futures = {}
-                for idx in range(ncells):
+                def _cell_args(idx: int) -> tuple:
                     r, c = divmod(idx, ncols)
-                    soil = soil_list[idx] or soil_list[0]
-                    sim_c = sim_configs[idx]
-                    lat_inflow = float(subsurface_inflow[r, c])
-
-                    f = pool.submit(
-                        _run_cell,
+                    return (
                         idx,
                         theta_grid[idx].copy(),
                         head_grid[idx].copy(),
-                        _soil_tuple(soil),
-                        _sim_dict(sim_c),
+                        _soil_tuple(soil_list[idx] or fallback_soil),
+                        _sim_dict(sim_configs[idx]),
                         col.nz,
                         col.dz_m,
                         float(rain_grid[r, c]),
                         float(pet_grid[r, c]),
                         dt_s,
                         _veg_dict(veg_list[idx]),
-                        lat_inflow,
+                        float(subsurface_inflow[r, c]),
                         float(cum_infilt_grid[idx]),
                     )
-                    futures[f] = idx
 
-                for future in as_completed(futures):
-                    result = future.result()
+                if pool is None:
+                    results = (_run_cell(*_cell_args(idx)) for idx in active_idx)
+                else:
+                    futures = [pool.submit(_run_cell, *_cell_args(idx)) for idx in active_idx]
+                    results = (future.result() for future in as_completed(futures))
+
+                for result in results:
                     (idx, new_theta, new_head, runoff,
                      lat_out, new_cum_inf) = result
                     r, c = divmod(idx, ncols)
@@ -517,12 +596,16 @@ def run_spatial_simulation(
                     new_lateral_out_grid[r, c] = lat_out
                     cum_infilt_grid[idx] = new_cum_inf
 
+            runoff_grid[~active_mask] = 0.0
+            new_lateral_out_grid[~active_mask] = 0.0
             lateral_out_grid = new_lateral_out_grid
 
             # --- 3. Overland-flow routing (Darcy–Weisbach + FD8, CFL-substepped) ---
             flow_depth, vx, vy = update_flow_depth(
                 flow_depth, runoff_grid, slope_grid, f_grid, fd8_weights, cell_size, dt_s
             )
+            # Water routed onto inactive cells leaves the domain
+            flow_depth[~active_mask] = 0.0
 
             # --- 4. Record diagnostics ---
             theta_mean_grid = theta_grid.mean(axis=1).reshape(nrows, ncols)
@@ -531,13 +614,19 @@ def run_spatial_simulation(
                 {
                     "step": step,
                     "time_hours": t_elapsed / 3600.0,
-                    "mean_theta": float(theta_mean_grid.mean()),
-                    "mean_runoff_mm_h": float(runoff_grid.mean()) * 1000.0 * 3600.0,
-                    "mean_flow_depth_m": float(flow_depth.mean()),
-                    "max_flow_depth_m": float(flow_depth.max()),
-                    "mean_lateral_out_mm_h": float(lateral_out_grid.mean()) * 1000.0 * 3600.0,
+                    "timestamp": timestamp,
+                    "mean_theta": float(theta_mean_grid[active_mask].mean()),
+                    "mean_runoff_mm_h": float(runoff_grid[active_mask].mean()) * 1000.0 * 3600.0,
+                    "mean_flow_depth_m": float(flow_depth[active_mask].mean()),
+                    "max_flow_depth_m": float(flow_depth[active_mask].max()),
+                    "mean_lateral_out_mm_h": float(lateral_out_grid[active_mask].mean()) * 1000.0 * 3600.0,
                 }
             )
+            theta_mean_steps.append(theta_mean_grid.astype(np.float32))
+            timestamps.append(timestamp)
+            max_flow_depth = np.maximum(max_flow_depth, flow_depth)
+            cum_runoff_m += runoff_grid * dt_s
+            cum_lateral_m += lateral_out_grid * dt_s
 
             # --- 5. Save arrays ---
             if cfg.save_npy_arrays:
@@ -555,6 +644,11 @@ def run_spatial_simulation(
             )
             step += 1
 
+            if progress_callback is not None and progress_callback(step, n_steps_total) is False:
+                print("Simulation cancelled.")
+                cancelled = True
+                break
+
     total_wall = time.monotonic() - t_wall_start
     print(f"\nSimulation complete: {step} steps, {total_wall:.1f}s wall time.")
 
@@ -569,7 +663,7 @@ def run_spatial_simulation(
     # -----------------------------------------------------------------------
     # Animations
     # -----------------------------------------------------------------------
-    if cfg.save_npy_arrays and step > 0:
+    if render_animations and cfg.save_npy_arrays and step > 0:
         from spatial_visualise import animate_spatial_results
         print("Rendering animations…")
         animate_spatial_results(
@@ -581,6 +675,23 @@ def run_spatial_simulation(
             quiver_stride=cfg.quiver_stride,
             snapshot_interval=cfg.snapshot_interval_steps,
         )
+
+    return {
+        "theta_mean_final": theta_grid.mean(axis=1).reshape(nrows, ncols),
+        "theta_layers_final": theta_grid.reshape(nrows, ncols, col.nz).copy(),
+        "theta_mean_steps": (
+            np.stack(theta_mean_steps) if theta_mean_steps
+            else np.zeros((0, nrows, ncols), dtype=np.float32)
+        ),
+        "max_flow_depth_m": max_flow_depth,
+        "cumulative_runoff_mm": cum_runoff_m * 1000.0,
+        "cumulative_lateral_out_mm": cum_lateral_m * 1000.0,
+        "diagnostics": diag_df,
+        "timestamps": timestamps,
+        "depth_m": depth_m,
+        "n_steps": step,
+        "cancelled": cancelled,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +838,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--lc-map", type=Path,
         help="JSON file mapping integer land-cover codes to vegetation names "
              '(e.g. {"1":"grass","2":"broadleaf_woodland"}). '
+             "Presets for UKCEH LCM, ESA WorldCover and CORINE are in landcover_maps/. "
              "If omitted, codes 1–11 are mapped to built-in vegetation types in order.",
     )
     p.add_argument(
@@ -843,8 +955,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     # Build code → name mapping
     code_to_veg_name_real: dict[int, str] = {}
     if args.lc_map and args.lc_map.exists():
-        with args.lc_map.open("r", encoding="utf-8") as f:
-            code_to_veg_name_real = {int(k): v for k, v in json.load(f).items()}
+        from spatial_utils import load_code_map
+        code_to_veg_name_real = load_code_map(args.lc_map)
     else:
         # Default: map 1–len(VEGETATION_LIBRARY) in order
         for i, name in enumerate(VEGETATION_LIBRARY, start=1):
