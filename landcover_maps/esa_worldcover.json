@@ -1,0 +1,14 @@
+{
+  "_comment": "ESA WorldCover 10 m (v100/v200) classes. Keys are raster codes, values are vegetation_types.json names.",
+  "10": "broadleaf_woodland",
+  "20": "shrubland",
+  "30": "grass",
+  "40": "wheat",
+  "50": "urban",
+  "60": "bare_soil",
+  "70": "bare_soil",
+  "80": "open_water",
+  "90": "moorland",
+  "95": "broadleaf_woodland",
+  "100": "moorland"
+}

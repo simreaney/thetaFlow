@@ -149,51 +149,82 @@ def read_raster_int(
 # Vegetation / soil type mapping
 # ---------------------------------------------------------------------------
 
+def _vegetation_entries(veg_types: "Path | dict") -> list[dict]:
+    """Return the ``vegetation_types`` entry list from a JSON path or an in-memory dict."""
+    if isinstance(veg_types, dict):
+        raw = veg_types
+    else:
+        with Path(veg_types).open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+    return list(raw["vegetation_types"])
+
+
+def load_vegetation_types(veg_types: "Path | dict") -> dict[str, object]:
+    """Build a ``{name: VegetationType}`` lookup from a JSON path or dict.
+
+    Entries in the JSON take precedence; the built-in ``VEGETATION_LIBRARY``
+    only fills in fields that an entry leaves out.
+    """
+    from simulate_soil_column import VegetationType, VEGETATION_LIBRARY
+
+    veg_lib: dict[str, VegetationType] = {}
+    for entry in _vegetation_entries(veg_types):
+        base = VEGETATION_LIBRARY.get(entry["name"])
+        veg_lib[entry["name"]] = VegetationType(
+            name=entry["name"],
+            rooting_depth_m=float(
+                entry.get("rooting_depth_m", base.rooting_depth_m if base else 0.0)
+            ),
+            pet_scale=float(entry.get("pet_scale", base.pet_scale if base else 1.0)),
+            description=entry.get("description", base.description if base else ""),
+        )
+    return veg_lib
+
+
+def load_code_map(path: Path) -> dict[int, str]:
+    """Read a land-cover ``{"code": "vegetation name"}`` JSON map.
+
+    Keys starting with ``_`` (e.g. ``"_comment"``) are ignored.
+    """
+    with Path(path).open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return {int(k): str(v) for k, v in raw.items() if not str(k).startswith("_")}
+
+
 def load_vegetation_map(
     landcover_codes: np.ndarray,
-    veg_json_path: Path,
+    veg_json_path: "Path | dict",
     code_to_name: dict[int, str],
+    default_name: Optional[str] = None,
 ) -> list[list[Optional[object]]]:
     """Map integer land-cover codes to VegetationType objects.
 
     Parameters
     ----------
     landcover_codes : (nrows, ncols) int array
-    veg_json_path : path to vegetation_types.json
+    veg_json_path : path to vegetation_types.json, or an equivalent dict
+        ``{"vegetation_types": [...]}``
     code_to_name : mapping from integer code → vegetation name string
         e.g. {1: "grass", 2: "broadleaf_woodland", ...}
+    default_name : vegetation name used for nodata cells and codes missing
+        from *code_to_name* (``None`` → no vegetation for those cells)
 
     Returns
     -------
-    grid of VegetationType (or None for nodata cells)
+    grid of VegetationType (or None for unmapped cells without a default)
     """
-    # Import here to avoid circular dependency
-    from simulate_soil_column import VegetationType, VEGETATION_LIBRARY
-
-    with veg_json_path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
-
-    # Rebuild library with darcy_weisbach_f
-    veg_lib: dict[str, VegetationType] = {}
-    for entry in raw["vegetation_types"]:
-        vt = VEGETATION_LIBRARY.get(entry["name"])
-        if vt is None:
-            vt = VegetationType(
-                name=entry["name"],
-                rooting_depth_m=entry["rooting_depth_m"],
-                pet_scale=entry.get("pet_scale", 1.0),
-                description=entry.get("description", ""),
-            )
-        veg_lib[entry["name"]] = vt
+    veg_lib = load_vegetation_types(veg_json_path)
+    default_veg = veg_lib.get(default_name) if default_name else None
 
     nrows, ncols = landcover_codes.shape
-    grid: list[list[Optional[VegetationType]]] = []
+    grid: list[list[Optional[object]]] = []
     for r in range(nrows):
-        row_list: list[Optional[VegetationType]] = []
+        row_list: list[Optional[object]] = []
         for c in range(ncols):
             code = int(landcover_codes[r, c])
             name = code_to_name.get(code)
-            row_list.append(veg_lib.get(name) if name else None)
+            veg = veg_lib.get(name) if name else None
+            row_list.append(veg if veg is not None else default_veg)
         grid.append(row_list)
     return grid
 
@@ -248,9 +279,10 @@ def load_soil_map(
 
 def build_friction_factor_grid(
     landcover_codes: np.ndarray,
-    veg_json_path: Path,
+    veg_json_path: "Path | dict",
     code_to_name: dict[int, str],
     overrides: Optional[dict[str, float]] = None,
+    default_name: Optional[str] = None,
 ) -> np.ndarray:
     """Build a (nrows, ncols) grid of Darcy–Weisbach friction factors.
 
@@ -261,20 +293,18 @@ def build_friction_factor_grid(
     Parameters
     ----------
     overrides : dict mapping vegetation *name* → f value
+    default_name : vegetation name used for unmapped / nodata codes
     """
-    with veg_json_path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
-
     # Build name → f lookup
     f_lookup: dict[str, float] = {}
-    for entry in raw["vegetation_types"]:
+    for entry in _vegetation_entries(veg_json_path):
         name = entry["name"]
         f_val = float(entry.get("darcy_weisbach_f", 0.5))
         if overrides and name in overrides:
             f_val = float(overrides[name])
         f_lookup[name] = f_val
 
-    default_f = 0.5
+    default_f = f_lookup.get(default_name, 0.5) if default_name else 0.5
     nrows, ncols = landcover_codes.shape
     f_grid = np.full((nrows, ncols), default_f, dtype=float)
     for r in range(nrows):
@@ -499,6 +529,34 @@ def update_flow_depth(
 
     vx, vy = compute_flow_vectors(outflow_rate, fd8_weights, cell_size_m)
     return h_new, vx, vy
+
+
+def fill_nodata_nearest(grid: np.ndarray, valid: np.ndarray, max_iter: int = 10000) -> np.ndarray:
+    """Fill invalid cells with the mean of their valid 8-neighbours, growing
+    inwards from the valid region until every cell has a value.
+
+    Used to give NoData DEM cells a neutral elevation so that they neither
+    create artificial cliffs nor act as spurious sources in FD8 routing.
+    """
+    out = np.where(valid, grid, 0.0).astype(float)
+    filled = valid.copy()
+    if not filled.any():
+        raise ValueError("Grid has no valid cells to fill from.")
+    nrows, ncols = out.shape
+    for _ in range(max_iter):
+        if filled.all():
+            break
+        pad_v = np.pad(np.where(filled, out, 0.0), 1)
+        pad_n = np.pad(filled.astype(float), 1)
+        total = np.zeros_like(out)
+        count = np.zeros_like(out)
+        for dr, dc in _NEIGHBOURS:
+            total += pad_v[1 + dr:1 + dr + nrows, 1 + dc:1 + dc + ncols]
+            count += pad_n[1 + dr:1 + dr + nrows, 1 + dc:1 + dc + ncols]
+        grow = (~filled) & (count > 0)
+        out[grow] = total[grow] / count[grow]
+        filled = filled | grow
+    return out
 
 
 # ---------------------------------------------------------------------------
