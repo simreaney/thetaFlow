@@ -25,9 +25,10 @@ python scripts/build_qgis_plugin.py      # writes dist/thetaflow_qgis.zip
 ```
 
 In QGIS, choose *Plugins → Manage and Install Plugins → Install from ZIP* and
-select `dist/thetaflow_qgis.zip`. The plugin needs QGIS 3.22 or newer, plus
-`numpy`, `pandas` and `requests`. The standard QGIS installers include all
-three. If a Linux distribution package lacks pandas, install `python3-pandas`.
+select `dist/thetaflow_qgis.zip`. The plugin needs QGIS 3.22 or newer
+(including QGIS 4.x, Qt6/PyQt6), plus `numpy`, `pandas` and `requests`. The
+standard QGIS installers include all three. If a Linux distribution package
+lacks pandas, install `python3-pandas`.
 
 **For development**, link the source folder into your QGIS profile instead.
 When it runs from the repository, the plugin uses the model modules in the

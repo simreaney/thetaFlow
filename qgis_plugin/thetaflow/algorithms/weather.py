@@ -58,9 +58,9 @@ def add_weather_parameters(alg):
 
 def _to_text(value):
     if isinstance(value, QDateTime):
-        return value.toString(Qt.ISODate)
+        return value.toString(Qt.DateFormat.ISODate)
     if isinstance(value, QDate):
-        return value.toString(Qt.ISODate)
+        return value.toString(Qt.DateFormat.ISODate)
     return None if value is None else str(value)
 
 

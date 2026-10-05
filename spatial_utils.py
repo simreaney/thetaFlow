@@ -214,33 +214,8 @@ def load_vegetation_map(
     -------
     grid of VegetationType (or None for unmapped cells without a default)
     """
-    # Import here to avoid circular dependency
-    from simulate_soil_column import VegetationType, VEGETATION_LIBRARY
-
-    with veg_json_path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
-
-    # Rebuild library with darcy_weisbach_f
-    veg_lib: dict[str, VegetationType] = {}
-    for entry in raw["vegetation_types"]:
-        name = entry["name"]
-        vt_base = VEGETATION_LIBRARY.get(name)
-        if vt_base is None:
-            vt = VegetationType(
-                name=name,
-                rooting_depth_m=entry["rooting_depth_m"],
-                pet_scale=entry.get("pet_scale", 1.0),
-                description=entry.get("description", ""),
-            )
-        else:
-            # Use JSON values to override built-in defaults
-            vt = VegetationType(
-                name=name,
-                rooting_depth_m=entry.get("rooting_depth_m", vt_base.rooting_depth_m),
-                pet_scale=entry.get("pet_scale", vt_base.pet_scale),
-                description=entry.get("description", vt_base.description),
-            )
-        veg_lib[name] = vt
+    veg_lib = load_vegetation_types(veg_json_path)
+    default_veg = veg_lib.get(default_name) if default_name else None
 
     nrows, ncols = landcover_codes.shape
     grid: list[list[Optional[object]]] = []

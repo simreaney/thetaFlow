@@ -1,6 +1,7 @@
 """ThetaFlow QGIS plugin: Processing algorithms for the thetaFlow
 Richards-equation hillslope model."""
 
+import importlib
 import os
 import sys
 
@@ -25,9 +26,18 @@ def _core_dir() -> str:
 CORE_DIR = _core_dir()
 if CORE_DIR not in sys.path:
     sys.path.insert(0, CORE_DIR)
+# A reinstall in the same QGIS session can leave a stale "no importer" entry
+# for CORE_DIR (cached while it did not exist), hiding the modules now in it.
+importlib.invalidate_caches()
 
 
 def classFactory(iface):  # noqa: N802 (QGIS API name)
+    if not os.path.isfile(os.path.join(CORE_DIR, "simulate_spatial.py")):
+        raise ImportError(
+            f"ThetaFlow model modules not found in {CORE_DIR}. Install the "
+            "plugin from the ZIP built by scripts/build_qgis_plugin.py "
+            "(dist/thetaflow_qgis.zip), not a ZIP of qgis_plugin/thetaflow."
+        )
     from .plugin import ThetaFlowPlugin
 
     return ThetaFlowPlugin(iface)

@@ -4,3 +4,7 @@ __pycache__/simulate_soil_column.cpython-313.pyc
 dist/
 __pycache__/
 .pytest_cache/
+qgis_plugin/thetaflow.zip
+/__pycache__
+/__pycache__
+*.pyc

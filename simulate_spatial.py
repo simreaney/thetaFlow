@@ -366,6 +366,11 @@ def run_spatial_simulation(
             soil_grid[r][c] for r in range(nrows) for c in range(ncols)
         ]
     else:
+        # Default: use a loam
+        default_soil = SoilProperties(
+            theta_r=0.078, theta_s=0.43, alpha_per_m=3.6, n=1.56,
+            ks_m_per_s=2.89e-6, pore_connectivity=0.5,
+        )
         soil_list = [default_soil] * ncells
 
     # Cells with no mapped soil fall back to the first available soil
