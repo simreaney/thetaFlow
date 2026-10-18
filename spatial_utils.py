@@ -25,6 +25,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 try:
     import rasterio
+    from rasterio.crs import CRS
     from rasterio.enums import Resampling
     from rasterio.transform import Affine
     from rasterio.warp import calculate_default_transform, reproject
@@ -69,11 +70,23 @@ class RasterMeta:
     transform: object           # rasterio Affine transform (or None)
 
 
+def _utm_crs_for(lon: float, lat: float) -> "CRS":
+    """Return the WGS 84 / UTM zone CRS containing (*lon*, *lat*)."""
+    zone = int(np.clip(np.floor((lon + 180.0) / 6.0) + 1, 1, 60))
+    epsg = (32600 if lat >= 0.0 else 32700) + zone
+    return CRS.from_epsg(epsg)
+
+
 def read_dem(
     dem_path: Path,
-    target_cell_size_m: float = 50.0,
+    target_cell_size_m: Optional[float] = 50.0,
 ) -> tuple[np.ndarray, RasterMeta]:
     """Read a DEM GeoTIFF and resample to *target_cell_size_m* resolution.
+
+    A DEM in a geographic CRS (longitude/latitude in degrees) is reprojected
+    to the UTM zone at its centre so that cells are square and in metres.
+    ``target_cell_size_m=None`` keeps the DEM's native resolution (after any
+    reprojection).
 
     Returns
     -------
@@ -83,33 +96,58 @@ def read_dem(
     """
     _require_rasterio()
     with rasterio.open(dem_path) as src:
+        if src.crs is None:
+            raise ValueError(
+                f"DEM {dem_path} has no coordinate reference system; assign a "
+                "projected CRS (units of metres) before running the model."
+            )
+        dst_crs = src.crs
+        if src.crs.is_geographic:
+            left, bottom, right, top = src.bounds
+            dst_crs = _utm_crs_for(0.5 * (left + right), 0.5 * (bottom + top))
+            print(f"  DEM is in geographic coordinates; reprojecting to {dst_crs}")
+
+        res_kwargs = {} if target_cell_size_m is None else {"resolution": target_cell_size_m}
         transform, width, height = calculate_default_transform(
-            src.crs, src.crs,
+            src.crs, dst_crs,
             src.width, src.height,
             *src.bounds,
-            resolution=target_cell_size_m,
+            **res_kwargs,
         )
+        if target_cell_size_m is None:
+            # Force square cells at the coarser of the native x/y spacings.
+            cell_size = float(max(abs(transform.a), abs(transform.e)))
+            transform, width, height = calculate_default_transform(
+                src.crs, dst_crs,
+                src.width, src.height,
+                *src.bounds,
+                resolution=cell_size,
+            )
+        else:
+            cell_size = float(target_cell_size_m)
+
         data = np.full((height, width), np.nan, dtype=float)
         reproject(
             source=rasterio.band(src, 1),
             destination=data,
             src_transform=src.transform,
             src_crs=src.crs,
+            src_nodata=src.nodata,
             dst_transform=transform,
-            dst_crs=src.crs,
+            dst_crs=dst_crs,
+            dst_nodata=np.nan,
             resampling=Resampling.bilinear,
         )
         nodata = src.nodata
         if nodata is not None:
             data[np.isclose(data, nodata)] = np.nan
-        crs = src.crs
 
     meta = RasterMeta(
         nrows=height,
         ncols=width,
-        cell_size_m=target_cell_size_m,
+        cell_size_m=cell_size,
         nodata=nodata,
-        crs=crs,
+        crs=dst_crs,
         transform=transform,
     )
     return data, meta

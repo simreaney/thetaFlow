@@ -854,6 +854,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--veg-types", type=Path, default=Path("vegetation_types.json"),
         help="Path to vegetation types JSON.",
     )
+    p.add_argument(
+        "--cell-size", type=float, default=None,
+        help="Model cell size in metres; the DEM is resampled to this. "
+             "Overrides cell_size_m in --config.",
+    )
+    p.add_argument(
+        "--native-resolution", action="store_true",
+        help="Run at the DEM's own resolution instead of resampling.",
+    )
+    p.add_argument(
+        "--vegetation", type=str, default=None, metavar="TYPE",
+        help="Vegetation type for every cell without a (mapped) land-cover code, "
+             "e.g. grass or wheat. Default: grass when no --landcover is given.",
+    )
     p.add_argument("--forcing", type=Path, help="Path to uniform forcing CSV.")
     p.add_argument(
         "--forcing-dir", type=Path,
@@ -894,6 +908,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     else:
         print(f"Config file {cfg_path} not found, using defaults.")
         cfg = SpatialConfig()
+    if args.cell_size is not None:
+        cfg.cell_size_m = args.cell_size
 
     # -----------------------------------------------------------------------
     # Synthetic mode
@@ -944,8 +960,17 @@ def main(argv: Optional[list[str]] = None) -> None:
     from spatial_utils import read_dem, read_raster_int
 
     print(f"Loading DEM: {args.dem}")
-    dem, meta = read_dem(args.dem, target_cell_size_m=cfg.cell_size_m)
-    print(f"  DEM shape: {dem.shape}  cell size: {meta.cell_size_m} m")
+    dem, meta = read_dem(
+        args.dem, target_cell_size_m=None if args.native_resolution else cfg.cell_size_m
+    )
+    cfg.cell_size_m = meta.cell_size_m
+    active_mask = np.isfinite(dem)
+    if not active_mask.any():
+        parser.error(f"DEM {args.dem} contains no valid elevation cells.")
+    print(
+        f"  DEM shape: {dem.shape}  cell size: {meta.cell_size_m:g} m  "
+        f"valid cells: {int(active_mask.sum())}"
+    )
 
     landcover_codes: Optional[np.ndarray] = None
     if args.landcover:
@@ -969,6 +994,15 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     veg_json = args.veg_types if args.veg_types.exists() else Path("vegetation_types.json")
     soil_types_json = args.soil_types if args.soil_types.exists() else None
+
+    if args.vegetation is not None:
+        from spatial_utils import load_vegetation_types
+        known = load_vegetation_types(veg_json)
+        if args.vegetation not in known:
+            parser.error(
+                f"Unknown vegetation type {args.vegetation!r}; "
+                f"choose from: {', '.join(sorted(known))}"
+            )
 
     # Forcing
     forcing_df_real: Optional[pd.DataFrame] = None
@@ -997,6 +1031,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         output_dir=args.output_dir,
         n_workers=args.workers,
         use_gpu=args.gpu,
+        default_vegetation=args.vegetation,
+        active_mask=active_mask,
     )
 
 
