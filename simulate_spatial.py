@@ -325,8 +325,9 @@ def run_spatial_simulation(
 
     Surface water is routed over the water surface (DEM + depth), so
     depressions fill and spill.  Water ponded on a cell, whether held in
-    depression storage or arriving as run-on from upslope, is offered for
-    infiltration at the next timestep.
+    depression storage or arriving as run-on from upslope, evaporates at PET
+    (reducing the PET left for the soil and vegetation) and the rest is
+    offered for infiltration at the next timestep.
 
     Returns
     -------
@@ -335,7 +336,8 @@ def run_spatial_simulation(
     ``max_flow_depth_m``, ``final_flow_depth_m``, ``cumulative_runoff_mm``
     (rainfall and saturation excess generated on each cell),
     ``cumulative_runon_infiltration_mm`` (ponded / run-on water that
-    infiltrated), ``cumulative_lateral_out_mm``, ``depression_storage_m`` (nrows, ncols),
+    infiltrated), ``cumulative_pond_evaporation_mm`` (ponded water
+    evaporated), ``cumulative_lateral_out_mm``, ``depression_storage_m`` (nrows, ncols),
     ``diagnostics`` (DataFrame), ``timestamps`` (list),
     ``depth_m`` (nz,), ``n_steps`` and ``cancelled``.
     """
@@ -602,6 +604,7 @@ def run_spatial_simulation(
     cum_runoff_m = np.zeros((nrows, ncols))
     cum_lateral_m = np.zeros((nrows, ncols))
     cum_runon_inf_m = np.zeros((nrows, ncols))
+    cum_pond_evap_m = np.zeros((nrows, ncols))
 
     print("Starting simulation…")
     t_wall_start = time.monotonic()
@@ -613,6 +616,16 @@ def run_spatial_simulation(
         )
         for dt_s, rain_grid, pet_grid, timestamp in _forcing_steps():
             step_start = time.monotonic()
+
+            # --- 0. Evaporation of ponded surface water ---
+            # Ponded water (run-on and depression storage) evaporates at the
+            # open-water rate PET first; only the remaining PET is passed on
+            # to soil evaporation / transpiration.
+            pet_flux_grid = np.maximum(pet_grid, 0.0) / 1000.0 / 3600.0
+            pond_evap_m = np.minimum(flow_depth, pet_flux_grid * dt_s)
+            pond_evap_m[~active_mask] = 0.0
+            flow_depth = flow_depth - pond_evap_m
+            pet_grid = np.maximum(pet_flux_grid - pond_evap_m / dt_s, 0.0) * 1000.0 * 3600.0
 
             # --- 1. Subsurface lateral throughflow redistribution from previous step ---
             subsurface_inflow = fd8_route_flux(lateral_out_grid, fd8_weights)
@@ -708,6 +721,7 @@ def run_spatial_simulation(
                     "surface_storage_mm": float(flow_depth[active_mask].mean()) * 1000.0,
                     "surface_outflow_mm": outflow_m / n_active * 1000.0,
                     "runon_infiltration_mm": float(runon_infiltrated_m[active_mask].mean()) * 1000.0,
+                    "pond_evaporation_mm": float(pond_evap_m[active_mask].mean()) * 1000.0,
                 }
             )
             theta_mean_steps.append(theta_mean_grid.astype(np.float32))
@@ -715,6 +729,7 @@ def run_spatial_simulation(
             max_flow_depth = np.maximum(max_flow_depth, flow_depth)
             cum_runoff_m += runoff_grid * dt_s
             cum_runon_inf_m += runon_infiltrated_m
+            cum_pond_evap_m += pond_evap_m
             cum_lateral_m += lateral_out_grid * dt_s
 
             # --- 5. Save arrays ---
@@ -777,6 +792,7 @@ def run_spatial_simulation(
         "depression_storage_m": ds_grid,
         "cumulative_runoff_mm": cum_runoff_m * 1000.0,
         "cumulative_runon_infiltration_mm": cum_runon_inf_m * 1000.0,
+        "cumulative_pond_evaporation_mm": cum_pond_evap_m * 1000.0,
         "cumulative_lateral_out_mm": cum_lateral_m * 1000.0,
         "diagnostics": diag_df,
         "timestamps": timestamps,

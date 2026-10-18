@@ -728,9 +728,10 @@ with `depression_storage_overrides`, or replaced by a raster
 
 #### Surface–subsurface coupling
 
-Each forcing step the soil column is offered rainfall plus the water already
-ponded on the cell (run-on and depression storage), so routed water can
-re-infiltrate downslope.  Ponded water infiltrates first; what remains, plus
+Each forcing step, water ponded on the cell (run-on and depression storage)
+first evaporates at the open-water rate PET; only the PET left over drives
+soil evaporation and transpiration.  The soil column is then offered rainfall
+plus the remaining ponded water, so routed water can re-infiltrate downslope.  Ponded water infiltrates first; what remains, plus
 any infiltration and saturation excess (e.g. lateral throughflow arriving at
 a saturated valley-bottom column), is routed.  Runoff and lateral outflow
 passed to the routing are averages over the step's substeps.
@@ -807,7 +808,7 @@ Each integer code maps to van Genuchten / Mualem parameters:
 | `flow_depth_NNNNN.npy` | Overland flow depth (m) at step N |
 | `flow_vx_NNNNN.npy` | East component of flow vector |
 | `flow_vy_NNNNN.npy` | North component of flow vector |
-| `spatial_diagnostics.csv` | Domain-mean diagnostics per timestep, including surface storage, surface outflow and run-on infiltration (mm) |
+| `spatial_diagnostics.csv` | Domain-mean diagnostics per timestep, including surface storage, surface outflow, run-on infiltration and ponded-water evaporation (mm) |
 | `soil_moisture.mp4` | Soil moisture animation (hillshade underlay) |
 | `overland_flow.mp4` | Flow depth + quiver-arrow animation |
 | `combined.mp4` | Side-by-side combined animation |

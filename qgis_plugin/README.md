@@ -199,6 +199,7 @@ These rasters are on the DEM grid, with NoData outside the DEM:
 | `max_flow_depth_m.tif` | maximum overland flow depth |
 | `cumulative_runoff_mm.tif` | total infiltration- and saturation-excess runoff generated |
 | `cumulative_runon_infiltration_mm.tif` | ponded / run-on surface water that re-infiltrated |
+| `cumulative_pond_evaporation_mm.tif` | ponded surface water that evaporated |
 | `cumulative_lateral_outflow_mm.tif` | total subsurface lateral outflow |
 
 The output folder also holds:

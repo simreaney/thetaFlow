@@ -116,6 +116,7 @@ def test_spatial_surface_water_balance_and_microtopography(tmp_path):
         d = res["diagnostics"]
         generated = res["cumulative_runoff_mm"].mean()
         balance = (generated - res["cumulative_runon_infiltration_mm"].mean()
+                   - res["cumulative_pond_evaporation_mm"].mean()
                    - d["surface_outflow_mm"].sum() - res["final_flow_depth_m"].mean() * 1000.0)
         assert abs(balance) < 1e-6
         assert generated > 0.0
@@ -132,3 +133,28 @@ def test_depression_storage_grid_overrides_with_nan_fallback(tmp_path):
     res = _spatial(tmp_path, 0.003, depression_storage_grid=grid)
     assert res["depression_storage_m"][0, 0] == pytest.approx(0.003)
     assert res["depression_storage_m"][3, 3] == pytest.approx(0.01)
+
+
+def test_ponded_water_evaporates(tmp_path):
+    cfg = SpatialConfig()
+    cfg.column.nz, cfg.column.dz_m = 10, 0.05
+    cfg.save_npy_arrays = False
+    cfg.depression_storage_m = 0.05
+    cfg.simulation.initial_head_m = 0.0  # saturated: the pond cannot infiltrate
+    forcing = pd.DataFrame({"rainfall_mm_h": [40.0, 0.0, 0.0, 0.0],
+                            "pet_mm_h": [0.0, 0.5, 0.5, 0.5], "dt_seconds": [3600.0] * 4})
+    res = run_spatial_simulation(
+        dem=_generate_synthetic_dem(6, 8, CELL), landcover_codes=None, soil_codes=None,
+        veg_json_path=VEG_JSON, soil_types_json_path=None, code_to_veg_name={},
+        forcing_uniform=forcing, forcing_gridded=None, cfg=cfg, output_dir=tmp_path,
+        render_animations=False, depression_storage_grid=np.full((6, 8), 0.05),
+    )
+    evap = res["cumulative_pond_evaporation_mm"]
+    # Ponded cells evaporate at PET (3 h × 0.5 mm/h), never more
+    assert evap.max() == pytest.approx(1.5)
+    assert np.all(evap <= 1.5 + 1e-9)
+    assert res["diagnostics"]["pond_evaporation_mm"].iloc[0] == 0.0
+    d = res["diagnostics"]
+    balance = (res["cumulative_runoff_mm"].mean() - res["cumulative_runon_infiltration_mm"].mean()
+               - evap.mean() - d["surface_outflow_mm"].sum() - res["final_flow_depth_m"].mean() * 1000.0)
+    assert abs(balance) < 1e-6
