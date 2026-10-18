@@ -1207,7 +1207,7 @@ def fetch_openmeteo_ensemble_forcing(
     return forcing_by_member, forecast_start
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Simulate vertical soil-water flow with Richards equation.")
     parser.add_argument(
         "--soil-config",
@@ -1291,11 +1291,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Optional[list[str]] = None) -> None:
+    args = parse_args(argv)
 
     if args.list_vegetation:
         print(f"{'Name':<25} {'Rooting depth (m)':>18} {'PET scale':>10}  Description")

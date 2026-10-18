@@ -420,6 +420,36 @@ pip install -r requirements.txt
 
 ## Run
 
+### Choosing a model mode
+
+`thetaflow.py` switches between the three model set-ups with a single word:
+
+| Mode | What it runs |
+|---|---|
+| `column` | 1-D soil column, no vegetation |
+| `vegetation` | 1-D soil column with root-zone water uptake (`--vegetation`, default `grass`) |
+| `2d` | 2-D spatial model; topography read from a DEM GeoTIFF (`--dem`) |
+
+```bash
+python thetaflow.py column --forcing-csv forcing_example.csv --output-dir outputs
+python thetaflow.py vegetation --vegetation wheat --output-dir outputs_wheat
+python thetaflow.py 2d --dem dem.tif --forcing forcing_example.csv --output-dir outputs_2d
+python thetaflow.py 2d --synthetic          # 2-D run on a synthetic hillslope
+```
+
+Everything after the mode is passed to `simulate_soil_column.py` (`column`,
+`vegetation`) or `simulate_spatial.py` (`2d`); use `python thetaflow.py <mode> --help`
+to list the options. In `2d` mode the DEM:
+
+- is resampled to `cell_size_m` from the config, or `--cell-size 25`, or kept at
+  its own resolution with `--native-resolution`;
+- is reprojected to the local UTM zone if it is in longitude/latitude (e.g. EPSG:4326),
+  so cells are square and in metres;
+- has its NoData cells excluded from the simulation.
+
+`--vegetation TYPE` sets the vegetation for every cell when no land-cover
+GeoTIFF is given. The scripts can also be run directly, as below.
+
 ```bash
 python simulate_soil_column.py \
   --soil-config soil_properties_example.json \
