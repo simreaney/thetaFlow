@@ -700,6 +700,42 @@ $$
 \frac{\partial h}{\partial t} = q_{runoff} + q_{in} - q_{out}
 $$
 
+The update is split into CFL-stable substeps ($v\,\Delta t / \Delta x \le 0.5$,
+checked against the depth reached by the end of each substep so a dry surface
+is not advanced over a whole forcing step in one go).  Within each substep
+the FD8 directions and slopes are recomputed from the **water surface**
+($z + h$), so depressions in the DEM fill and then spill instead of trapping
+or losing water.  Edge cells with no lower neighbour are outlets; water
+reaching cells outside the active (DEM NoData) mask leaves the domain.
+
+#### Microtopography (depression storage threshold)
+
+Sub-grid surface roughness — tussocks, plough furrows, tyre ruts, litter —
+holds water in micro-depressions before any runoff can leave a cell.  This is
+represented by a depression storage depth $d_s$: only the depth above it is
+mobile,
+
+$$
+h_{mob} = \max(h - d_s,\, 0), \qquad q_{out} = \frac{v(h_{mob})\,h_{mob}}{\Delta x}
+$$
+
+so no water leaves a cell until $h > d_s$.  Water held in storage stays on
+the cell and keeps infiltrating.  $d_s$ comes from `depression_storage_m` in
+`vegetation_types.json` (1.5 mm urban to 10 mm moorland), falls back to the
+config value `depression_storage_m`, can be overridden per vegetation name
+with `depression_storage_overrides`, or replaced by a raster
+(`depression_storage_grid` argument / the QGIS "depression storage" input).
+
+#### Surface–subsurface coupling
+
+Each forcing step, water ponded on the cell (run-on and depression storage)
+first evaporates at the open-water rate PET; only the PET left over drives
+soil evaporation and transpiration.  The soil column is then offered rainfall
+plus the remaining ponded water, so routed water can re-infiltrate downslope.  Ponded water infiltrates first; what remains, plus
+any infiltration and saturation excess (e.g. lateral throughflow arriving at
+a saturated valley-bottom column), is routed.  Runoff and lateral outflow
+passed to the routing are averages over the step's substeps.
+
 ### Installation
 
 ```bash
@@ -772,7 +808,7 @@ Each integer code maps to van Genuchten / Mualem parameters:
 | `flow_depth_NNNNN.npy` | Overland flow depth (m) at step N |
 | `flow_vx_NNNNN.npy` | East component of flow vector |
 | `flow_vy_NNNNN.npy` | North component of flow vector |
-| `spatial_diagnostics.csv` | Domain-mean diagnostics per timestep |
+| `spatial_diagnostics.csv` | Domain-mean diagnostics per timestep, including surface storage, surface outflow, run-on infiltration and ponded-water evaporation (mm) |
 | `soil_moisture.mp4` | Soil moisture animation (hillshade underlay) |
 | `overland_flow.mp4` | Flow depth + quiver-arrow animation |
 | `combined.mp4` | Side-by-side combined animation |
@@ -787,6 +823,8 @@ Key settings:
 | `cell_size_m` | 50 | Grid cell size in metres |
 | `fd8_exponent` | 1.1 | FD8 slope exponent (Freeman 1991) |
 | `darcy_weisbach_f_overrides` | `{}` | Per-name friction factor overrides |
+| `depression_storage_m` | 0.0 | Microtopographic depression storage (m) for vegetation types without a value |
+| `depression_storage_overrides` | `{}` | Per-name depression storage overrides (m) |
 | `output.animation_fps` | 4 | Frames per second for MP4 |
 | `output.quiver_stride` | 2 | Quiver arrow density (1 = every cell) |
 | `output.snapshot_interval_steps` | 1 | Steps between PNG snapshots (0 = off) |

@@ -33,6 +33,10 @@ RASTER_OUTPUTS = [
     ("THETA_MEAN_TIMESERIES", "theta_mean_timeseries.tif", "Mean soil moisture per step", "Blues", False),
     ("MAX_FLOW_DEPTH", "max_flow_depth_m.tif", "Maximum overland flow depth (m)", "Viridis", False),
     ("CUMULATIVE_RUNOFF", "cumulative_runoff_mm.tif", "Cumulative runoff (mm)", "Reds", False),
+    ("CUMULATIVE_RUNON_INFILTRATION", "cumulative_runon_infiltration_mm.tif",
+     "Cumulative run-on infiltration (mm)", "Greens", False),
+    ("CUMULATIVE_POND_EVAPORATION", "cumulative_pond_evaporation_mm.tif",
+     "Cumulative ponded-water evaporation (mm)", "Oranges", False),
     ("CUMULATIVE_LATERAL", "cumulative_lateral_outflow_mm.tif",
      "Cumulative subsurface lateral outflow (mm)", "Purples", False),
 ]
@@ -133,6 +137,7 @@ class RunSpatialAlgorithm(ThetaFlowInputsMixin, QgsProcessingAlgorithm):
                     soil_list_override=inputs.soil_list,
                     default_vegetation=inputs.default_veg,
                     active_mask=inputs.valid,
+                    depression_storage_grid=inputs.depression_storage_m,
                     progress_callback=progress,
                     render_animations=animations,
                 )
@@ -156,6 +161,8 @@ class RunSpatialAlgorithm(ThetaFlowInputsMixin, QgsProcessingAlgorithm):
             "THETA_MEAN_TIMESERIES": (result["theta_mean_steps"], step_names),
             "MAX_FLOW_DEPTH": (result["max_flow_depth_m"], None),
             "CUMULATIVE_RUNOFF": (result["cumulative_runoff_mm"], None),
+            "CUMULATIVE_RUNON_INFILTRATION": (result["cumulative_runon_infiltration_mm"], None),
+            "CUMULATIVE_POND_EVAPORATION": (result["cumulative_pond_evaporation_mm"], None),
             "CUMULATIVE_LATERAL": (result["cumulative_lateral_out_mm"], None),
         }
         outputs = {}

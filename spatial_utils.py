@@ -278,6 +278,46 @@ def load_soil_map(
 # Darcy–Weisbach friction factor grid
 # ---------------------------------------------------------------------------
 
+def build_vegetation_property_grid(
+    landcover_codes: np.ndarray,
+    veg_json_path: "Path | dict",
+    code_to_name: dict[int, str],
+    field: str,
+    fallback: float,
+    overrides: Optional[dict[str, float]] = None,
+    default_name: Optional[str] = None,
+) -> np.ndarray:
+    """Build a (nrows, ncols) grid of a numeric vegetation-type property.
+
+    Values come from *field* in *vegetation_types.json* (``fallback`` when a
+    type does not define it).  Per-name overrides in *overrides* take
+    precedence.
+
+    Parameters
+    ----------
+    overrides : dict mapping vegetation *name* → value
+    default_name : vegetation name used for unmapped / nodata codes
+    """
+    lookup: dict[str, float] = {}
+    for entry in _vegetation_entries(veg_json_path):
+        name = entry["name"]
+        val = float(entry.get(field, fallback))
+        if overrides and name in overrides:
+            val = float(overrides[name])
+        lookup[name] = val
+
+    default_val = lookup.get(default_name, fallback) if default_name else fallback
+    nrows, ncols = landcover_codes.shape
+    grid = np.full((nrows, ncols), default_val, dtype=float)
+    for r in range(nrows):
+        for c in range(ncols):
+            code = int(landcover_codes[r, c])
+            name = code_to_name.get(code)
+            if name and name in lookup:
+                grid[r, c] = lookup[name]
+    return grid
+
+
 def build_friction_factor_grid(
     landcover_codes: np.ndarray,
     veg_json_path: "Path | dict",
@@ -290,31 +330,32 @@ def build_friction_factor_grid(
     Default values come from the ``darcy_weisbach_f`` field in
     *vegetation_types.json*.  Per-name overrides in *overrides* take
     precedence.
-
-    Parameters
-    ----------
-    overrides : dict mapping vegetation *name* → f value
-    default_name : vegetation name used for unmapped / nodata codes
     """
-    # Build name → f lookup
-    f_lookup: dict[str, float] = {}
-    for entry in _vegetation_entries(veg_json_path):
-        name = entry["name"]
-        f_val = float(entry.get("darcy_weisbach_f", 0.5))
-        if overrides and name in overrides:
-            f_val = float(overrides[name])
-        f_lookup[name] = f_val
+    return build_vegetation_property_grid(
+        landcover_codes, veg_json_path, code_to_name, "darcy_weisbach_f", 0.5,
+        overrides=overrides, default_name=default_name,
+    )
 
-    default_f = f_lookup.get(default_name, 0.5) if default_name else 0.5
-    nrows, ncols = landcover_codes.shape
-    f_grid = np.full((nrows, ncols), default_f, dtype=float)
-    for r in range(nrows):
-        for c in range(ncols):
-            code = int(landcover_codes[r, c])
-            name = code_to_name.get(code)
-            if name and name in f_lookup:
-                f_grid[r, c] = f_lookup[name]
-    return f_grid
+
+def build_depression_storage_grid(
+    landcover_codes: np.ndarray,
+    veg_json_path: "Path | dict",
+    code_to_name: dict[int, str],
+    fallback_m: float = 0.0,
+    overrides: Optional[dict[str, float]] = None,
+    default_name: Optional[str] = None,
+) -> np.ndarray:
+    """Build a (nrows, ncols) grid of microtopographic depression storage (m).
+
+    Values come from the ``depression_storage_m`` field in
+    *vegetation_types.json* (``fallback_m`` where a type does not define it).
+    Surface water shallower than this threshold is held in micro-depressions
+    and cannot run off; see :func:`update_flow_depth`.
+    """
+    return build_vegetation_property_grid(
+        landcover_codes, veg_json_path, code_to_name, "depression_storage_m", fallback_m,
+        overrides=overrides, default_name=default_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +379,39 @@ def compute_slope_grid(
     return slope
 
 
+def _neighbour_gradients(surface: np.ndarray, cell_size_m: float) -> np.ndarray:
+    """Gradient (drop / distance, positive = downhill) from each cell to each
+    of its 8 neighbours, as a (nrows, ncols, 8) array.  Directions that leave
+    the domain get zero."""
+    nrows, ncols = surface.shape
+    grads = np.zeros((nrows, ncols, 8), dtype=float)
+    rr = np.arange(nrows)
+    cc = np.arange(ncols)
+    for k, (dr, dc) in enumerate(_NEIGHBOURS):
+        dist = cell_size_m * _DIST_MULT[k]
+        rr_n = np.clip(rr + dr, 0, nrows - 1)
+        cc_n = np.clip(cc + dc, 0, ncols - 1)
+        g = (surface - surface[np.ix_(rr_n, cc_n)]) / dist
+        # Boundary cells: zero weight toward virtual copies of themselves
+        if dr == -1:
+            g[0, :] = 0.0
+        elif dr == 1:
+            g[-1, :] = 0.0
+        if dc == -1:
+            g[:, 0] = 0.0
+        elif dc == 1:
+            g[:, -1] = 0.0
+        grads[:, :, k] = g
+    return grads
+
+
+def _fd8_weights_from_gradients(grads: np.ndarray, exponent: float) -> np.ndarray:
+    weights = np.maximum(grads, 0.0) ** exponent
+    total = weights.sum(axis=2, keepdims=True)
+    total = np.where(total <= 0.0, 1.0, total)  # avoid /0 for flat areas
+    return weights / total
+
+
 def compute_fd8_weights(
     dem: np.ndarray,
     cell_size_m: float,
@@ -347,7 +421,8 @@ def compute_fd8_weights(
 
     For each cell the slope to each of its 8 neighbours is computed.  Only
     downslope directions (positive slope, i.e. lower neighbours) receive
-    weight.  Weights are normalised to sum to 1.0.
+    weight.  Weights are normalised to sum to 1.0; cells with no lower
+    neighbour (pits, flats, outlets on the domain edge) get all-zero weights.
 
     Parameters
     ----------
@@ -361,41 +436,7 @@ def compute_fd8_weights(
         weights[r, c, k] is the fraction of flow from cell (r, c) directed
         to neighbour k (using the _NEIGHBOURS ordering).
     """
-    nrows, ncols = dem.shape
-    weights = np.zeros((nrows, ncols, 8), dtype=float)
-
-    for k, (dr, dc) in enumerate(_NEIGHBOURS):
-        dist = cell_size_m * _DIST_MULT[k]
-        # Vectorised slope from each cell to neighbour k (positive = downhill)
-        rr = np.arange(nrows)
-        cc = np.arange(ncols)
-        rr_n = np.clip(rr + dr, 0, nrows - 1)
-        cc_n = np.clip(cc + dc, 0, ncols - 1)
-
-        elev = dem
-        elev_n = dem[np.ix_(rr_n, cc_n)]
-        slope_k = (elev - elev_n) / dist  # positive = downhill
-        # Boundary cells: zero weight toward virtual copies of themselves
-        on_edge = np.zeros((nrows, ncols), dtype=bool)
-        if dr == -1:
-            on_edge[0, :] = True
-        elif dr == 1:
-            on_edge[-1, :] = True
-        if dc == -1:
-            on_edge[:, 0] = True
-        elif dc == 1:
-            on_edge[:, -1] = True
-        slope_k = np.where(on_edge, 0.0, slope_k)
-
-        # FD8: only downslope neighbours
-        w_k = np.maximum(slope_k, 0.0) ** exponent
-        weights[:, :, k] = w_k
-
-    # Normalise
-    total = weights.sum(axis=2, keepdims=True)
-    total = np.where(total <= 0.0, 1.0, total)  # avoid /0 for flat areas
-    weights /= total
-    return weights
+    return _fd8_weights_from_gradients(_neighbour_gradients(dem, cell_size_m), exponent)
 
 
 def fd8_route_flux(
@@ -520,12 +561,16 @@ def update_flow_depth(
     dt_s: float,
     cfl_safety: float = 0.5,
     min_substep_seconds: float = 0.1,
+    dem: Optional[np.ndarray] = None,
+    depression_storage_m: "float | np.ndarray" = 0.0,
+    active_mask: Optional[np.ndarray] = None,
+    fd8_exponent: float = 1.1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Advance overland flow depth over ``dt_s`` using a simple explicit
     continuity scheme with FD8 redistribution, subdivided into CFL-stable
     substeps.
 
-    Outflow from each cell = v * h / cell_width (per substep).
+    Outflow from each cell = v * h_mobile / cell_width (per substep).
     Inflow = FD8-weighted contributions from upslope cells.
 
     Without substepping, the explicit update is unconditionally unstable for
@@ -534,21 +579,48 @@ def update_flow_depth(
     once the resulting negative overshoot is clamped. Velocity is recomputed
     every substep since it depends on the evolving depth.
 
+    Microtopography is represented as a depression-storage threshold: only
+    the depth above ``depression_storage_m`` is mobile and can leave a cell,
+    the rest is held in micro-depressions (and is available to infiltrate).
+
+    Interior cells with no lower neighbour (pits) store water instead of
+    draining it.  When *dem* is given, flow directions and slopes are
+    recomputed every substep from the water surface ``dem + depth``, so pits
+    fill and then spill.  Edge cells with no lower neighbour are outlets and
+    drain out of the domain at the DEM slope.  Water reaching cells outside
+    *active_mask* leaves the domain.
+
     Parameters
     ----------
     flow_depth_m : current flow depth (m)
     runoff_flux : surface runoff produced this timestep (m/s)
     slope_grid : DEM-derived slope magnitude (rise/run)
     f_grid : Darcy–Weisbach friction factor grid
-    fd8_weights : (nrows, ncols, 8)
+    fd8_weights : (nrows, ncols, 8); used only when *dem* is None
     cell_size_m : grid spacing (m)
     dt_s : total timestep to advance (s)
+    dem : optional elevation grid for water-surface routing
+    depression_storage_m : scalar or (nrows, ncols) microtopographic
+        depression storage (m) that must fill before runoff can leave a cell
+    active_mask : optional (nrows, ncols) bool array of simulated cells
+    fd8_exponent : FD8 exponent for water-surface routing
 
     Returns
     -------
     new_depth, vx, vy : updated depth array and time-averaged flow vectors
     """
     h = np.maximum(flow_depth_m, 0.0)
+    nrows, ncols = h.shape
+    storage = np.broadcast_to(np.maximum(depression_storage_m, 0.0), h.shape)
+    inactive = None if active_mask is None else ~np.asarray(active_mask, dtype=bool)
+    if inactive is not None:
+        h = np.where(inactive, 0.0, h)
+
+    boundary = np.zeros((nrows, ncols), dtype=bool)
+    boundary[0, :] = boundary[-1, :] = True
+    boundary[:, 0] = boundary[:, -1] = True
+
+    dist = cell_size_m * _DIST_MULT
     vx_accum = np.zeros_like(h)
     vy_accum = np.zeros_like(h)
 
@@ -560,22 +632,57 @@ def update_flow_depth(
             warnings.warn("update_flow_depth: exceeded max substeps, truncating.")
             break
 
-        velocity = darcy_weisbach_velocity(h, slope_grid, f_grid)
+        if dem is not None:
+            grads = _neighbour_gradients(dem + h, cell_size_m)
+            weights = _fd8_weights_from_gradients(grads, fd8_exponent)
+            # Slope along the routed flow directions, and the drop to the
+            # lowest neighbour (limits outflow so the water surface cannot
+            # overshoot below its receivers within a substep)
+            route_slope = np.sum(weights * grads, axis=2)
+            max_drop = np.max(np.maximum(grads, 0.0) * dist, axis=2)
+        else:
+            weights = fd8_weights
+            route_slope = slope_grid
+            max_drop = None
+
+        has_receiver = weights.sum(axis=2) > 0.0
+        outlet = boundary & ~has_receiver
+        slope = np.where(outlet, slope_grid, route_slope)
+
+        mobile = np.maximum(h - storage, 0.0)
+        mobile = np.where(has_receiver | outlet, mobile, 0.0)
+        velocity = darcy_weisbach_velocity(mobile, slope, f_grid)
         sub_dt = estimate_stable_overland_dt_seconds(
             velocity, cell_size_m, remaining_s, cfl_safety, min_substep_seconds
         )
+        # Also respect CFL at the depth reached by the end of the substep, so
+        # a dry (zero-velocity) surface is not advanced over the whole step
+        # in one go while runoff is being added
+        for _ in range(2):
+            mobile_end = np.maximum(h + runoff_flux * sub_dt - storage, 0.0)
+            mobile_end = np.where(has_receiver | outlet, mobile_end, 0.0)
+            sub_dt = estimate_stable_overland_dt_seconds(
+                darcy_weisbach_velocity(mobile_end, slope, f_grid),
+                cell_size_m, sub_dt, cfl_safety, min_substep_seconds,
+            )
 
-        # Volume of water leaving each cell per second per unit area (m/s)
-        outflow_rate = velocity * h / cell_size_m  # m/s normalised by cell width
+        # Depth of water leaving each cell this substep (m), never more than
+        # the mobile depth
+        out_depth = np.minimum(velocity * mobile / cell_size_m * sub_dt, mobile)
+        if max_drop is not None:
+            out_depth = np.where(has_receiver, np.minimum(out_depth, 0.5 * max_drop), out_depth)
+        outflow_rate = out_depth / sub_dt
 
-        # Inflow from upslope cells
-        inflow_rate = fd8_route_flux(outflow_rate, fd8_weights)
+        # Inflow from upslope cells (outlet outflow has no receiver and leaves)
+        inflow_rate = fd8_route_flux(outflow_rate, weights)
 
         # Continuity: dh/dt = runoff_flux + inflow - outflow
         h = h + sub_dt * (runoff_flux + inflow_rate - outflow_rate)
         h = np.maximum(h, 0.0)
+        if inactive is not None:
+            h = np.where(inactive, 0.0, h)
 
-        vx, vy = compute_flow_vectors(outflow_rate, fd8_weights, cell_size_m)
+        vx, vy = compute_flow_vectors(outflow_rate, weights, cell_size_m)
         vx_accum += vx * sub_dt
         vy_accum += vy * sub_dt
         remaining_s -= sub_dt

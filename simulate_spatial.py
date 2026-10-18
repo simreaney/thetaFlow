@@ -67,6 +67,7 @@ from spatial_utils import (
     fd8_route_flux,
     update_flow_depth,
     build_friction_factor_grid,
+    build_depression_storage_grid,
     read_uniform_forcing,
 )
 
@@ -100,6 +101,11 @@ class SpatialConfig:
     )
     fd8_exponent: float = 1.1
     darcy_weisbach_f_overrides: dict[str, float] = field(default_factory=dict)
+    # Microtopographic depression storage (m): surface water must exceed this
+    # depth before it can run off a cell.  Used for vegetation types without a
+    # ``depression_storage_m`` entry; per-name overrides take precedence.
+    depression_storage_m: float = 0.0
+    depression_storage_overrides: dict[str, float] = field(default_factory=dict)
     save_npy_arrays: bool = True
     snapshot_interval_steps: int = 0
     animation_fps: int = 4
@@ -142,6 +148,8 @@ def load_spatial_config(config_path: Path) -> SpatialConfig:
         simulation=simulation,
         fd8_exponent=float(raw.get("fd8_exponent", 1.1)),
         darcy_weisbach_f_overrides=raw.get("darcy_weisbach_f_overrides", {}),
+        depression_storage_m=float(raw.get("depression_storage_m", 0.0)),
+        depression_storage_overrides=raw.get("depression_storage_overrides", {}),
         save_npy_arrays=bool(out.get("save_npy_arrays", True)),
         snapshot_interval_steps=int(out.get("snapshot_interval_steps", 1)),
         animation_fps=int(out.get("animation_fps", 4)),
@@ -167,16 +175,24 @@ def _run_cell(
     veg_dict: Optional[dict],
     lateral_inflow_m_per_s: float,
     cumulative_infiltration_m_in: float,
+    ponded_depth_m: float = 0.0,
 ) -> tuple[int, np.ndarray, np.ndarray, float, float, float]:
     """Process one soil column for one forcing timestep.
 
     All arguments are plain Python/numpy objects to be picklable for
-    subprocess transport.
+    subprocess transport.  Surface water already on the cell
+    (*ponded_depth_m*: run-on from upslope and water held in depression
+    storage) is offered for infiltration alongside rainfall, spread evenly
+    over the timestep.
 
     Returns
     -------
     cell_idx, new_theta, new_head, runoff_m_per_s, lateral_out_m_per_s,
     cumulative_infiltration_m
+
+    ``runoff_m_per_s`` (surface water not infiltrated, including the
+    returned ponded water and saturation excess) and ``lateral_out_m_per_s``
+    are averages over the timestep.
     """
     # Reconstruct objects from plain dicts / tuples
     soil = SoilProperties(*soil_props)
@@ -195,9 +211,11 @@ def _run_cell(
     _, depth_m = build_column_geometry(col_nz, col_dz)
 
     cumulative_infiltration_m = max(cumulative_infiltration_m_in, 1.0e-6)
+    water_supply_mm_h = rainfall_mm_h + max(ponded_depth_m, 0.0) / max(duration_s, 1.0e-9) * 1000.0 * 3600.0
     remaining_s = duration_s
     n_iter = 0
-    last_diag: Optional[dict] = None
+    runoff_m = 0.0
+    lateral_out_m = 0.0
 
     while remaining_s > 1.0e-9:
         n_iter += 1
@@ -208,7 +226,7 @@ def _run_cell(
         candidate_max_dt = min(sim.max_substep_seconds, remaining_s)
         stable_dt = estimate_stable_dt_seconds(
             state, soil, sim, cumulative_infiltration_m, col_dz,
-            rainfall_mm_h, pet_mm_h,
+            water_supply_mm_h, pet_mm_h,
             sim.min_theta_buffer, sim.max_dtheta_per_substep,
             candidate_max_dt, sim.min_substep_seconds,
             depth_m=depth_m, vegetation=veg,
@@ -217,16 +235,18 @@ def _run_cell(
 
         state, diag, cumulative_infiltration_m = one_substep(
             state, soil, sim, cumulative_infiltration_m, col_dz, dt_s,
-            rainfall_mm_h, pet_mm_h,
+            water_supply_mm_h, pet_mm_h,
             sim.min_theta_buffer,
             depth_m=depth_m, vegetation=veg,
             lateral_inflow_m_per_s=lateral_inflow_m_per_s,
         )
-        last_diag = diag
+        runoff_m += diag["runoff_flux_m_per_s"] * dt_s
+        lateral_out_m += diag["lateral_throughflow_flux_m_per_s"] * dt_s
         remaining_s -= dt_s
 
-    runoff = last_diag["runoff_flux_m_per_s"] if last_diag else 0.0
-    lateral_out = last_diag["lateral_throughflow_flux_m_per_s"] if last_diag else 0.0
+    elapsed_s = max(duration_s - remaining_s, 1.0e-9)
+    runoff = runoff_m / elapsed_s
+    lateral_out = lateral_out_m / elapsed_s
 
     return cell_idx, state.theta, state.head_m, runoff, lateral_out, cumulative_infiltration_m
 
@@ -267,6 +287,7 @@ def run_spatial_simulation(
     active_mask: Optional[np.ndarray] = None,
     progress_callback: Optional[Callable[[int, int], bool]] = None,
     render_animations: bool = True,
+    depression_storage_grid: Optional[np.ndarray] = None,
 ) -> dict[str, object]:
     """Run the 2-D spatial simulation.
 
@@ -298,13 +319,26 @@ def run_spatial_simulation(
     progress_callback : called as ``progress_callback(step, n_steps)`` after
         each forcing step; returning ``False`` cancels the run
     render_animations : render MP4 animations / snapshots from saved arrays
+    depression_storage_grid : optional (nrows, ncols) microtopographic
+        depression storage (m); replaces the values derived from vegetation
+        types and ``cfg.depression_storage_m`` except where NaN
+
+    Surface water is routed over the water surface (DEM + depth), so
+    depressions fill and spill.  Water ponded on a cell, whether held in
+    depression storage or arriving as run-on from upslope, evaporates at PET
+    (reducing the PET left for the soil and vegetation) and the rest is
+    offered for infiltration at the next timestep.
 
     Returns
     -------
     dict with keys ``theta_mean_final`` (nrows, ncols), ``theta_layers_final``
     (nrows, ncols, nz), ``theta_mean_steps`` (n_steps, nrows, ncols),
-    ``max_flow_depth_m``, ``cumulative_runoff_mm``, ``cumulative_lateral_out_mm``
-    (nrows, ncols), ``diagnostics`` (DataFrame), ``timestamps`` (list),
+    ``max_flow_depth_m``, ``final_flow_depth_m``, ``cumulative_runoff_mm``
+    (rainfall and saturation excess generated on each cell),
+    ``cumulative_runon_infiltration_mm`` (ponded / run-on water that
+    infiltrated), ``cumulative_pond_evaporation_mm`` (ponded water
+    evaporated), ``cumulative_lateral_out_mm``, ``depression_storage_m`` (nrows, ncols),
+    ``diagnostics`` (DataFrame), ``timestamps`` (list),
     ``depth_m`` (nz,), ``n_steps`` and ``cancelled``.
     """
     if use_gpu and not _CUPY_AVAILABLE:
@@ -327,6 +361,7 @@ def run_spatial_simulation(
     active_mask = np.asarray(active_mask, dtype=bool)
     active_flat = active_mask.ravel()
     active_idx = [int(i) for i in np.flatnonzero(active_flat)]
+    n_active = max(len(active_idx), 1)
 
     print(
         f"Grid: {nrows} × {ncols} = {ncells} cells ({len(active_idx)} active)  |  "
@@ -423,6 +458,34 @@ def run_spatial_simulation(
         )
     else:
         f_grid = np.full((nrows, ncols), 0.5)
+
+    # -----------------------------------------------------------------------
+    # Microtopographic depression storage grid
+    # -----------------------------------------------------------------------
+    ds_overrides = cfg.depression_storage_overrides or None
+    if landcover_codes is not None:
+        ds_grid = build_depression_storage_grid(
+            landcover_codes, veg_json_path, code_to_veg_name,
+            fallback_m=cfg.depression_storage_m, overrides=ds_overrides,
+            default_name=default_vegetation,
+        )
+    elif default_vegetation is not None:
+        ds_grid = build_depression_storage_grid(
+            np.zeros((nrows, ncols), dtype=np.int32), veg_json_path, {},
+            fallback_m=cfg.depression_storage_m, overrides=ds_overrides,
+            default_name=default_vegetation,
+        )
+    else:
+        ds_grid = np.full((nrows, ncols), cfg.depression_storage_m)
+    if depression_storage_grid is not None:
+        ds_user = np.asarray(depression_storage_grid, dtype=float)
+        if ds_user.shape != (nrows, ncols):
+            raise ValueError(
+                f"depression_storage_grid has shape {ds_user.shape}; expected {(nrows, ncols)}."
+            )
+        # NaN cells keep the vegetation-derived value
+        ds_grid = np.where(np.isfinite(ds_user), ds_user, ds_grid)
+    ds_grid = np.maximum(ds_grid, 0.0)
 
     # -----------------------------------------------------------------------
     # Initialise state arrays
@@ -540,6 +603,8 @@ def run_spatial_simulation(
     max_flow_depth = np.zeros((nrows, ncols))
     cum_runoff_m = np.zeros((nrows, ncols))
     cum_lateral_m = np.zeros((nrows, ncols))
+    cum_runon_inf_m = np.zeros((nrows, ncols))
+    cum_pond_evap_m = np.zeros((nrows, ncols))
 
     print("Starting simulation…")
     t_wall_start = time.monotonic()
@@ -552,6 +617,16 @@ def run_spatial_simulation(
         for dt_s, rain_grid, pet_grid, timestamp in _forcing_steps():
             step_start = time.monotonic()
 
+            # --- 0. Evaporation of ponded surface water ---
+            # Ponded water (run-on and depression storage) evaporates at the
+            # open-water rate PET first; only the remaining PET is passed on
+            # to soil evaporation / transpiration.
+            pet_flux_grid = np.maximum(pet_grid, 0.0) / 1000.0 / 3600.0
+            pond_evap_m = np.minimum(flow_depth, pet_flux_grid * dt_s)
+            pond_evap_m[~active_mask] = 0.0
+            flow_depth = flow_depth - pond_evap_m
+            pet_grid = np.maximum(pet_flux_grid - pond_evap_m / dt_s, 0.0) * 1000.0 * 3600.0
+
             # --- 1. Subsurface lateral throughflow redistribution from previous step ---
             subsurface_inflow = fd8_route_flux(lateral_out_grid, fd8_weights)
 
@@ -561,9 +636,10 @@ def run_spatial_simulation(
 
             if use_gpu and _CUPY_AVAILABLE:
                 # GPU path: vectorised across cells using CuPy
+                # Ponded surface water is offered for infiltration with rain
                 _run_cells_gpu(
                     theta_grid, head_grid, soil_list, sim_configs, veg_list,
-                    rain_grid, pet_grid, subsurface_inflow,
+                    rain_grid + flow_depth / dt_s * 1000.0 * 3600.0, pet_grid, subsurface_inflow,
                     dt_s, col, runoff_grid, new_lateral_out_grid,
                 )
             else:
@@ -583,6 +659,7 @@ def run_spatial_simulation(
                         _veg_dict(veg_list[idx]),
                         float(subsurface_inflow[r, c]),
                         float(cum_infilt_grid[idx]),
+                        float(flow_depth[r, c]),
                     )
 
                 if pool is None:
@@ -606,11 +683,27 @@ def run_spatial_simulation(
             lateral_out_grid = new_lateral_out_grid
 
             # --- 3. Overland-flow routing (Darcy–Weisbach + FD8, CFL-substepped) ---
+            # The columns were offered rain + ponded water; runoff_grid is what
+            # they did not take.  Ponded water is assumed to infiltrate first,
+            # the rest stays on the surface and the rainfall / saturation
+            # excess is added as the runoff source over the step.
+            infiltrated_m = rain_grid / 1000.0 / 3600.0 * dt_s + flow_depth - runoff_grid * dt_s
+            runon_infiltrated_m = np.clip(infiltrated_m, 0.0, flow_depth)
+            runon_infiltrated_m[~active_mask] = 0.0
+            surface_start = flow_depth - runon_infiltrated_m
+            runoff_grid = np.maximum(runoff_grid * dt_s - surface_start, 0.0) / dt_s
+            runoff_grid[~active_mask] = 0.0
+
+            # Water leaving through domain-edge outlets or onto inactive cells
+            # leaves the domain.
+            surface_before = float(surface_start[active_mask].sum() + runoff_grid[active_mask].sum() * dt_s)
             flow_depth, vx, vy = update_flow_depth(
-                flow_depth, runoff_grid, slope_grid, f_grid, fd8_weights, cell_size, dt_s
+                surface_start, runoff_grid, slope_grid, f_grid, fd8_weights,
+                cell_size, dt_s,
+                dem=dem_clean, depression_storage_m=ds_grid, active_mask=active_mask,
+                fd8_exponent=cfg.fd8_exponent,
             )
-            # Water routed onto inactive cells leaves the domain
-            flow_depth[~active_mask] = 0.0
+            outflow_m = surface_before - float(flow_depth[active_mask].sum())
 
             # --- 4. Record diagnostics ---
             theta_mean_grid = theta_grid.mean(axis=1).reshape(nrows, ncols)
@@ -625,12 +718,18 @@ def run_spatial_simulation(
                     "mean_flow_depth_m": float(flow_depth[active_mask].mean()),
                     "max_flow_depth_m": float(flow_depth[active_mask].max()),
                     "mean_lateral_out_mm_h": float(lateral_out_grid[active_mask].mean()) * 1000.0 * 3600.0,
+                    "surface_storage_mm": float(flow_depth[active_mask].mean()) * 1000.0,
+                    "surface_outflow_mm": outflow_m / n_active * 1000.0,
+                    "runon_infiltration_mm": float(runon_infiltrated_m[active_mask].mean()) * 1000.0,
+                    "pond_evaporation_mm": float(pond_evap_m[active_mask].mean()) * 1000.0,
                 }
             )
             theta_mean_steps.append(theta_mean_grid.astype(np.float32))
             timestamps.append(timestamp)
             max_flow_depth = np.maximum(max_flow_depth, flow_depth)
             cum_runoff_m += runoff_grid * dt_s
+            cum_runon_inf_m += runon_infiltrated_m
+            cum_pond_evap_m += pond_evap_m
             cum_lateral_m += lateral_out_grid * dt_s
 
             # --- 5. Save arrays ---
@@ -689,7 +788,11 @@ def run_spatial_simulation(
             else np.zeros((0, nrows, ncols), dtype=np.float32)
         ),
         "max_flow_depth_m": max_flow_depth,
+        "final_flow_depth_m": flow_depth.copy(),
+        "depression_storage_m": ds_grid,
         "cumulative_runoff_mm": cum_runoff_m * 1000.0,
+        "cumulative_runon_infiltration_mm": cum_runon_inf_m * 1000.0,
+        "cumulative_pond_evaporation_mm": cum_pond_evap_m * 1000.0,
         "cumulative_lateral_out_mm": cum_lateral_m * 1000.0,
         "diagnostics": diag_df,
         "timestamps": timestamps,

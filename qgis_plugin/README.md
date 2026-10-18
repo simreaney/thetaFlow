@@ -126,11 +126,13 @@ Values outside the physical ranges are clipped, and the log reports how many:
 
 ### Land cover and vegetation
 
-Land cover sets three things for each cell:
+Land cover sets four things for each cell:
 
 - the **rooting depth**, which controls root water uptake over the soil layers;
 - the **PET scale**, which converts PET to plant water demand;
-- the **Darcy–Weisbach friction factor** for overland flow.
+- the **Darcy–Weisbach friction factor** for overland flow;
+- the **depression storage** (microtopography): the depth of surface water a
+  cell holds in micro-depressions before any runoff can leave it.
 
 These come from `vegetation_types.json`.
 
@@ -154,10 +156,14 @@ These come from `vegetation_types.json`.
   used it.
 - If a rooting depth is deeper than the soil column (layers × thickness), the
   log warns you.
+- **Depression storage raster** (optional, mm): replaces the vegetation-type
+  depression storage, e.g. from a field survey or a roughness map. NoData
+  cells keep the vegetation value. To change a type's value instead, add
+  `depression_storage_m` to a vegetation types JSON.
 
 Run *Prepare / preview model inputs* to check the mapping. It writes
 `vegetation_class.tif` with a labelled palette, plus `rooting_depth_m.tif`,
-`pet_scale.tif`, `friction_factor.tif` and one `soil_<property>.tif` per
+`pet_scale.tif`, `friction_factor.tif`, `depression_storage_mm.tif` and one `soil_<property>.tif` per
 property, with one band per layer.
 
 ### Weather
@@ -191,7 +197,9 @@ These rasters are on the DEM grid, with NoData outside the DEM:
 | `theta_layers_final.tif` | θ for each soil layer at the end (band description = depth) |
 | `theta_mean_timeseries.tif` | column-mean θ for each step (band description = timestamp) |
 | `max_flow_depth_m.tif` | maximum overland flow depth |
-| `cumulative_runoff_mm.tif` | total infiltration-excess runoff generated |
+| `cumulative_runoff_mm.tif` | total infiltration- and saturation-excess runoff generated |
+| `cumulative_runon_infiltration_mm.tif` | ponded / run-on surface water that re-infiltrated |
+| `cumulative_pond_evaporation_mm.tif` | ponded surface water that evaporated |
 | `cumulative_lateral_outflow_mm.tif` | total subsurface lateral outflow |
 
 The output folder also holds:

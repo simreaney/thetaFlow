@@ -14,7 +14,11 @@ from ..resources import ICON_PATH
 from .common import VEG_COLOURS, ThetaFlowInputsMixin, load_on_completion
 
 import soil_depth as sd  # noqa: E402
-from spatial_utils import build_friction_factor_grid, load_vegetation_map  # noqa: E402
+from spatial_utils import (  # noqa: E402
+    build_depression_storage_grid,
+    build_friction_factor_grid,
+    load_vegetation_map,
+)
 
 SOIL_RAMPS = {
     "theta_r": "Oranges",
@@ -67,7 +71,8 @@ class PrepareInputsAlgorithm(ThetaFlowInputsMixin, QgsProcessingAlgorithm):
         for prop in sd.SOIL_PROPERTIES:
             self.addOutput(QgsProcessingOutputRasterLayer(f"SOIL_{prop.upper()}", f"Soil {prop} by layer"))
         for key, label in (("VEGETATION_CLASS", "Vegetation type"), ("ROOTING_DEPTH", "Rooting depth (m)"),
-                           ("PET_SCALE", "PET scale"), ("FRICTION_FACTOR", "Darcy–Weisbach friction factor")):
+                           ("PET_SCALE", "PET scale"), ("FRICTION_FACTOR", "Darcy–Weisbach friction factor"),
+                           ("DEPRESSION_STORAGE", "Depression storage (mm)")):
             self.addOutput(QgsProcessingOutputRasterLayer(key, label))
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 (QGIS API name)
@@ -104,6 +109,15 @@ class PrepareInputsAlgorithm(ThetaFlowInputsMixin, QgsProcessingAlgorithm):
             overrides=inputs.cfg.darcy_weisbach_f_overrides or None,
             default_name=inputs.default_veg,
         )
+        depression = build_depression_storage_grid(
+            codes, inputs.veg_types, inputs.code_map,
+            fallback_m=inputs.cfg.depression_storage_m,
+            overrides=inputs.cfg.depression_storage_overrides or None,
+            default_name=inputs.default_veg,
+        )
+        if inputs.depression_storage_m is not None:
+            user = inputs.depression_storage_m
+            depression = np.where(np.isfinite(user), user, depression)
 
         used = sorted({int(v) for v in np.unique(veg_class[mask])})
         palette = [(i, VEG_COLOURS.get(names[i - 1], _fallback_colour(i)), names[i - 1]) for i in used]
@@ -119,6 +133,8 @@ class PrepareInputsAlgorithm(ThetaFlowInputsMixin, QgsProcessingAlgorithm):
             ("ROOTING_DEPTH", "rooting_depth_m.tif", rooting, "Rooting depth (m)", "Greens"),
             ("PET_SCALE", "pet_scale.tif", pet_scale, "PET scale", "Oranges"),
             ("FRICTION_FACTOR", "friction_factor.tif", friction, "Darcy–Weisbach friction factor", "YlOrBr"),
+            ("DEPRESSION_STORAGE", "depression_storage_mm.tif", depression * 1000.0,
+             "Depression storage (mm)", "YlGnBu"),
         ):
             outputs[key] = write_geotiff(os.path.join(out_dir, fname), data, spec, mask=mask)
             load_on_completion(context, outputs[key], label, key, ramp=ramp)
