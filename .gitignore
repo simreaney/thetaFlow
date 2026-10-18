@@ -9,3 +9,4 @@ qgis_plugin/thetaflow.zip
 /__pycache__
 *.pyc
 *.pyc
+*.pyc
