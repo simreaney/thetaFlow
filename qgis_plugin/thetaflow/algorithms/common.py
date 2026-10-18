@@ -110,6 +110,7 @@ class ModelInputs:
     veg_types: dict                     # {"vegetation_types": [...]}
     default_veg: str
     centroid_lonlat: tuple
+    depression_storage_m: Optional[np.ndarray] = None   # user raster (m), NaN = use vegetation
 
 
 class FeedbackStream(io.TextIOBase):
@@ -296,6 +297,12 @@ class ThetaFlowInputsMixin:
             "DEFAULT_VEG", "Default vegetation (no land cover, unmapped codes, NoData)",
             defaultValue="grass"))
 
+        # Microtopography ----------------------------------------------------
+        self.addParameter(QgsProcessingParameterRasterLayer(
+            "DEPRESSION_STORAGE",
+            "Microtopography depression storage raster (mm) [optional; default from vegetation types]",
+            optional=True))
+
         # Column / numerics --------------------------------------------------
         self.addParameter(QgsProcessingParameterNumber(
             "NZ", "Number of soil layers", QgsProcessingParameterNumber.Integer,
@@ -408,6 +415,15 @@ class ThetaFlowInputsMixin:
                 f"Deepest rooting depth in use ({max_root:g} m) exceeds the soil column depth "
                 f"({column_depth:g} m); root uptake will be truncated. Increase layers or thickness.")
 
+        ds_layer = self.parameterAsRasterLayer(parameters, "DEPRESSION_STORAGE", context)
+        depression_storage = None
+        if ds_layer is not None:
+            depression_storage = warp_to_grid(ds_layer.source(), spec) / 1000.0
+            missing = int(np.count_nonzero(~np.isfinite(depression_storage[valid])))
+            if missing:
+                feedback.pushWarning(
+                    f"{missing} cells have no depression storage value; using the vegetation default.")
+
         xs, ys = spec.cell_centres()
         lon, lat = to_wgs84(spec.crs_wkt, [xs.mean()], [ys.mean()], context)
         cfg.simulation.latitude, cfg.simulation.longitude = float(lat[0]), float(lon[0])
@@ -417,6 +433,7 @@ class ThetaFlowInputsMixin:
             soil_list=soil_list, soil_profiles=profiles, landcover_codes=landcover_codes,
             code_map=code_map, veg_types=veg_types, default_veg=default_veg,
             centroid_lonlat=(float(lon[0]), float(lat[0])),
+            depression_storage_m=depression_storage,
         )
 
     # ------------------------------------------------------------------

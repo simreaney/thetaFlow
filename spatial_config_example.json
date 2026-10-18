@@ -23,6 +23,11 @@
 
   "fd8_exponent": 1.1,
 
+  "depression_storage_m": 0.005,
+  "depression_storage_overrides": {
+    "_comment": "Optional per-vegetation-name microtopographic depression storage (m). Surface water must exceed this depth before it can run off a cell. Defaults come from vegetation_types.json; depression_storage_m above is used for types without a value."
+  },
+
   "darcy_weisbach_f_overrides": {
     "_comment": "Optional per-vegetation-name friction factor overrides. Keys must match vegetation_types.json 'name' fields.",
     "urban": 0.08,

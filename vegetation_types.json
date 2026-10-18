@@ -5,6 +5,7 @@
       "rooting_depth_m": 0.30,
       "pet_scale": 1.0,
       "darcy_weisbach_f": 0.5,
+      "depression_storage_m": 0.004,
       "description": "Short managed or natural grass sward."
     },
     {
@@ -12,6 +13,7 @@
       "rooting_depth_m": 1.50,
       "pet_scale": 1.1,
       "darcy_weisbach_f": 2.0,
+      "depression_storage_m": 0.008,
       "description": "Deciduous broadleaf trees (oak, ash, beech, etc.)."
     },
     {
@@ -19,6 +21,7 @@
       "rooting_depth_m": 1.20,
       "pet_scale": 1.05,
       "darcy_weisbach_f": 1.5,
+      "depression_storage_m": 0.008,
       "description": "Evergreen coniferous plantation or native forest."
     },
     {
@@ -26,6 +29,7 @@
       "rooting_depth_m": 0.20,
       "pet_scale": 0.7,
       "darcy_weisbach_f": 1.0,
+      "depression_storage_m": 0.01,
       "description": "Upland heath and blanket bog dominated by heather and sedge."
     },
     {
@@ -33,6 +37,7 @@
       "rooting_depth_m": 1.00,
       "pet_scale": 1.0,
       "darcy_weisbach_f": 0.6,
+      "depression_storage_m": 0.005,
       "description": "Winter or spring wheat cereal crop."
     },
     {
@@ -40,6 +45,7 @@
       "rooting_depth_m": 1.20,
       "pet_scale": 1.15,
       "darcy_weisbach_f": 0.7,
+      "depression_storage_m": 0.006,
       "description": "Silage or grain maize."
     },
     {
@@ -47,6 +53,7 @@
       "rooting_depth_m": 0.90,
       "pet_scale": 1.0,
       "darcy_weisbach_f": 0.6,
+      "depression_storage_m": 0.005,
       "description": "Winter oilseed rape (canola)."
     },
     {
@@ -54,6 +61,7 @@
       "rooting_depth_m": 1.00,
       "pet_scale": 1.0,
       "darcy_weisbach_f": 0.6,
+      "depression_storage_m": 0.006,
       "description": "Sugar beet root crop."
     },
     {
@@ -61,6 +69,7 @@
       "rooting_depth_m": 0.60,
       "pet_scale": 1.05,
       "darcy_weisbach_f": 0.5,
+      "depression_storage_m": 0.008,
       "description": "Potato tuber crop."
     },
     {
@@ -68,6 +77,7 @@
       "rooting_depth_m": 0.0,
       "pet_scale": 0.3,
       "darcy_weisbach_f": 0.3,
+      "depression_storage_m": 0.005,
       "description": "No vegetation; evaporation from soil surface only."
     },
     {
@@ -75,6 +85,7 @@
       "rooting_depth_m": 0.10,
       "pet_scale": 0.2,
       "darcy_weisbach_f": 0.1,
+      "depression_storage_m": 0.0015,
       "description": "Urban or suburban mix with mostly impervious surfaces."
     },
     {
@@ -82,6 +93,7 @@
       "rooting_depth_m": 0.80,
       "pet_scale": 0.9,
       "darcy_weisbach_f": 1.2,
+      "depression_storage_m": 0.006,
       "description": "Scrub, heath-scrub and transitional woodland-shrub."
     },
     {
@@ -89,6 +101,7 @@
       "rooting_depth_m": 0.0,
       "pet_scale": 1.0,
       "darcy_weisbach_f": 0.05,
+      "depression_storage_m": 0.0,
       "description": "Lakes, rivers and sea (placeholder: the soil column is not a water body)."
     }
   ]

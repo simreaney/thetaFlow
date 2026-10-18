@@ -468,7 +468,13 @@ def one_substep(
             lateral_source_rate[:] = lateral_inflow_m_per_s / (n * dz_m)
 
     theta_new = theta + dt_s * (vertical_dtheta_rate - lateral_sink_rate + lateral_source_rate - aet_sink)
-    theta_new = np.clip(theta_new, soil.theta_r + 1.0e-8, theta_s_eff - 1.0e-8)
+    # Water that cannot be stored once a layer saturates (e.g. lateral inflow
+    # into a saturated valley-bottom column) returns to the surface as
+    # saturation-excess runoff instead of being lost.
+    theta_max = theta_s_eff - 1.0e-8
+    saturation_excess_flux = float(np.sum(np.maximum(theta_new - theta_max, 0.0)) * dz_m / dt_s)
+    runoff_flux += saturation_excess_flux
+    theta_new = np.clip(theta_new, soil.theta_r + 1.0e-8, theta_max)
     head_new = head_from_theta(theta_new, soil, theta_s_profile=theta_s_profile)
 
     lateral_throughflow_flux = float(np.sum(lateral_flux_layers) * dz_m / max(sim.hillslope_flow_path_m, 1.0e-9))
@@ -479,6 +485,7 @@ def one_substep(
         "aet_flux_m_per_s": aet_flux,
         "infiltration_flux_m_per_s": infiltration_flux,
         "runoff_flux_m_per_s": runoff_flux,
+        "saturation_excess_flux_m_per_s": saturation_excess_flux,
         "infiltration_capacity_flux_m_per_s": infiltration_capacity_flux,
         "cumulative_infiltration_m": cumulative_infiltration_m_new,
         "surface_net_downward_flux_m_per_s": net_downward_flux,
